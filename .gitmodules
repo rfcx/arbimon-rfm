@@ -1,0 +1,6 @@
+[submodule "db"]
+	path = db
+	url = https://github.com/rfcx/arbimon-db.git
+[submodule "store"]
+	path = store
+	url = https://github.com/rfcx/arbimon-store.git

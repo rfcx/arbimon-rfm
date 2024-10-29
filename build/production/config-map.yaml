@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arbimon-rfm-config
+  namespace: production
+data:
+  DB_HOST: arbimon-cluster.cluster-ctjyvabp9jnq.us-east-1.rds.amazonaws.com
+  DB_NAME: arbimon2
+  S3_BUCKET_NAME: rfcx-streams-production
+  S3_LEGACY_BUCKET_NAME: arbimon2

@@ -1,0 +1,28 @@
+version: "3.8"
+include:
+  - ./db/docker-compose.yaml
+  - ./store/docker-compose.yaml
+services:
+  app:
+    image: rfm
+    build:
+      context: .
+      dockerfile: ./build/Dockerfile
+      target: arbimon-rfm
+    volumes:
+      - $PWD/rfm:/app/rfm
+    environment:
+      - DB_HOST=mysql
+      - DB_NAME=arbimon2
+      - DB_USER=admin
+      - DB_PASSWORD=admin-secret
+      - S3_BUCKET_NAME=core-bucket
+      - S3_LEGACY_BUCKET_NAME=legacy-bucket
+      - S3_ENDPOINT=http://s3mock:9090
+      - AWS_ACCESS_KEY_ID=fake
+      - AWS_SECRET_ACCESS_KEY=fake
+    env_file: .env
+    command: "tail -f /dev/null"
+    depends_on:
+      - mysql
+      - s3mock

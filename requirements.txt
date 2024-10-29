@@ -1,0 +1,14 @@
+requests==2.28.1
+PyYAML==6.0
+joblib==1.2.0
+matplotlib==3.6.1
+rfcx==0.2.6
+soundfile==0.12.1
+
+# For legacy
+mysql-connector-python==8.1.0
+boto3==1.28.71
+
+# Dev
+pytest==7.2.0
+pytest-cov==4.0.0
