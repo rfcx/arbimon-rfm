@@ -1,4 +1,3 @@
-version: "3.8"
 include:
   - ./db/docker-compose.yaml
   - ./store/docker-compose.yaml
