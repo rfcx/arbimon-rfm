@@ -1,5 +1,6 @@
 from .config.logs import get_logger
 from .config.read_config import read_config
+from .legacy.train import run_train
 from .old.db import connect, get_automated_user, create_job
 
 log = get_logger()
@@ -18,7 +19,7 @@ def main(config):
         print('Something went wrong creating the job')
         exit(1)
 
-    # playlist_to_soundscape(job_id)
+    run_train(job_id)
     print('- Completed job', job_id)
 
 
