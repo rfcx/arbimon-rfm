@@ -58,13 +58,13 @@ class Recording(object):
                 self.channs = f.channels
                 self.samples = f.nframes
                 self.sample_rate = f.samplerate
-                print "recording {}, ({} bps, {} channels, {} samples, {} sample rate)".format(
+                print("recording {}, ({} bps, {} channels, {} samples, {} sample rate)".format(
                     self.get_uri(),
                     self.bps,
                     self.channs,
                     self.samples,
                     self.sample_rate
-                )
+                ))
                 return f.read_frames(f.nframes,dtype=numpy.dtype('int'+str(self.bps)))
         
     def get_spectrogram(self, clip=None):

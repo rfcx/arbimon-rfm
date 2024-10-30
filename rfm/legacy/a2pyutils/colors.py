@@ -16,14 +16,13 @@ def convert_spaces(cl, s1, s2):
         rgb = getattr(colorsys, "%s_to_rgb" % s1)(*cl2)
         return getattr(colorsys, "rgb_to_%s" % s2)(*rgb)
 
-for s1 in spaces:
-    for s2 in spaces:
-        exec (
-            "def {s1}2{s2}(cl):\n" +
-            "\t'Changes colors from {s1} to {s2}'\n" +
-            "\treturn convert_spaces(cl, '{s1}', '{s2}')\n" +
-            "\n"
-        ).format(s1=s1, s2=s2)
+
+def rgb2hsv(cl):
+    return convert_spaces(cl, 'rgb', 'hsv')
+
+
+def hsv2rgb(cl):
+    return convert_spaces(cl, 'hsv', 'rgb')
 
 
 def normalize(cl, scale=255.0):
@@ -80,14 +79,10 @@ class LinearGradient(AbstractGradient):
         f, c = map(int, [math.floor(i), math.ceil(i)])
         a = i - f
         cl = [(c1*(1-a) + c2*a) for (c1, c2) in zip(colors[f], colors[c])]
-        # print "  {0} color[{1}] : {2} * {3} + {4} * {5} = {6}".format(
-        #     self.__class__.__name__, p, 1-a, colors[f], a, colors[c], cl
-        # )
         return cl
 
     def __call__(self, i):
         cl = self.spacetx(self._grad_(i))
-        # print "    - ", cl
         return quantize(cl, self.quant_scale) if self.quant_scale else cl
 
 
@@ -101,9 +96,6 @@ class MultiGradient(AbstractGradient):
         j = i * c
         q = min(math.floor(j), c-1)
         cl = self.gradients[int(q)](j-q)
-        # print "{0} color[{1}] : {2}, {3}, {4}, {5}, {6}".format(
-        #     self.__class__.__name__, i, c, j, q, cl, j-q
-        # )
         return quantize(cl, self.quant_scale) if self.quant_scale else cl
 
 
@@ -114,4 +106,4 @@ if __name__ == "__main__":
                 rgb = (r, g, b)
                 hsv = rgb2hsv(rgb)
                 rgb2 = hsv2rgb(hsv)
-                print "rgb : %r, hsv : %r, rgb2: %r" % (rgb, hsv, rgb2)
+                print("rgb : %r, hsv : %r, rgb2: %r" % (rgb, hsv, rgb2))

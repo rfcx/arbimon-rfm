@@ -1,4 +1,4 @@
-from a2pyutils import colors
+from . import colors
 import pylab
 
 
@@ -53,4 +53,4 @@ def print_hex(palette):
     def cl(x):
         return '#%s%s%s' % (h(x[0]),h(x[1]),h(x[2]))
 
-    print [cl(x) for x in palette]
+    print([cl(x) for x in palette])

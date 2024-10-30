@@ -34,7 +34,6 @@ class ExtractRoiTask(a2.job.tasks.Task):
         roidata = numpy.load(os.path.join(base_path, 'surface.npz'))
         roi_spec, fbounds = roidata['roi'], roidata['fbounds']
         flag_ssim, flag_search_match = self.get_analysis_flags(model_type_id)
-        print type(fbounds[0])
         recanalizer = a2.audio.recanalizer.Recanalizer(
             recording,
             roi_spec,
@@ -62,7 +61,6 @@ class ExtractRoiTask(a2.job.tasks.Task):
             recording.get_name()
         )
 
-        print "vector :: ", vector
         csv = ','.join(str(x) for x in vector) + '\n'
 
         runtime.bucket.upload_string(key, csv, 'public-read')

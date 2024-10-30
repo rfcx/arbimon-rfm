@@ -1,9 +1,6 @@
 import os
-from config import EnvironmentConfig
 import time
-
-configuration = EnvironmentConfig()
-
+import tempfile
 
 class Logger:
     def __init__(self, jobId, script, logFor='worker', logON=True):
@@ -19,7 +16,7 @@ class Logger:
         self.logON = logON
         self.also_print = False
         if self.logON:
-            tempFolders = str(configuration.pathsConfig['temp_dir'])
+            tempFolders = tempfile.gettempdir()
             self.workingFolder = tempFolders+"/logs/job_"+str(jobId)
             if not os.path.exists(self.workingFolder):
                 os.makedirs(self.workingFolder)
@@ -51,7 +48,7 @@ class Logger:
                 self.log_file_handle.close()
                 self.log_file_handle = None
             if self.also_print:
-                print "#LOG:" + currTime + ':\t'+message
+                print("#LOG:" + currTime + ':\t'+message)
 
     def time_delta(self, message, start):
         self.write("{} --- seconds --- {}".format(

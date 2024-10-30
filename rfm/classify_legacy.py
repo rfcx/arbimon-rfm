@@ -1,6 +1,6 @@
 from .config.logs import get_logger
 from .config.read_config import read_config
-from .old.db import connect, get_automated_user, create_job
+from .legacy.db import connect, get_automated_user, create_job
 from .legacy.a2audio.classification_lib import run_classification
 
 log = get_logger()

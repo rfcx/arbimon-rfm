@@ -4,7 +4,6 @@ from a2audio.recanalizer import Recanalizer
 from a2pyutils.jobs_lib import cancelStatus
 from soundscape.set_visual_scale_lib import *
 import time
-import MySQLdb
 import contextlib
 import tempfile
 import shutil
@@ -12,10 +11,9 @@ import os
 import traceback
 import multiprocessing
 from joblib import Parallel, delayed
-import cPickle as pickle
+import pickle
 import csv
 import json
-import sys
 
 classificationCanceled =False
 

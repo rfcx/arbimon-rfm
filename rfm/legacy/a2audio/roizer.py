@@ -1,9 +1,10 @@
-from rec import Rec
 from pylab import *
 from matplotlib import *
 import numpy
 import math
 import json
+
+from .rec import Rec
 
 class Roizer:
 

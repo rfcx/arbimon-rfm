@@ -1,10 +1,8 @@
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn import metrics
-from sklearn.preprocessing import normalize
 import numpy
-import cPickle as pickle
-from itertools import izip as zip, count
+import pickle
+from itertools import count
 import random
 import csv
 
@@ -28,7 +26,6 @@ class Model:
         self.jobId = jobid
         
     def addSample(self,present,row,uri):
-        print str(present)
         self.classes.append(str(present))
         self.uris.append(uri)
         if self.minv > row[3]:

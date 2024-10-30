@@ -68,7 +68,7 @@ class AudioEventDetectionJob(a2pyutils.job.Job):
         return matplotlib.mlab.specgram(rec.original, NFFT=512, Fs=rec.sample_rate, noverlap=256)
 
     def process_recording(self, subindex, data, step, inputs):
-        print "#{} : {}".format(subindex, data['uri'])
+        print("#{} : {}".format(subindex, data['uri']))
         
         segmenter = self.get_segmenter()
         roi_stats_computer = self.get_stats_computer()
@@ -102,7 +102,7 @@ class AudioEventDetectionJob(a2pyutils.job.Job):
                 roidata.update(roi_stats_computer(roi, origin, scale))
 
                 roi_adder.add(roidata)
-        print "#{} : {} rois".format(subindex, roi_count)
+        print("#{} : {} rois".format(subindex, roi_count))
 
         return [subindex, roi_count]
 

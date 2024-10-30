@@ -17,7 +17,6 @@ class PlanJobTask(tasks.Task):
     tagged 'job.planner' of the given job type.
     """
     def run(self):
-        print "plan task running :-)"
         job = runtime.db.queryOne("""
             SELECT J.job_id as id, JTp.identifier as type
             FROM job_tasks JT

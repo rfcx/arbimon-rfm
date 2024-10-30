@@ -4,6 +4,8 @@ joblib==1.2.0
 matplotlib==3.6.1
 rfcx==0.2.6
 soundfile==0.12.1
+pypng==0.0.17
+scikit-learn==0.24.2
 
 # For legacy
 mysql-connector-python==8.1.0

@@ -1,69 +1,59 @@
 import sys
 import sys
-import unidecode
 import os
 import csv
+import multiprocessing
 import traceback
 import shutil
-import MySQLdb
 import traceback
 import json
-from boto.s3.connection import S3Connection
-from contextlib import closing
-from a2audio.training import *
-from a2pyutils.config import EnvironmentConfig
-from a2pyutils.logger import Logger
-import multiprocessing
-from joblib import Parallel, delayed
-from a2audio.roiset import Roiset
-from a2audio.model import Model
+import boto3
 import numpy
 import png
+from contextlib import closing
+from joblib import Parallel, delayed
 from pylab import *
+
+from .a2audio.model import Model
+from .a2audio.roiset import Roiset
+from .a2audio.training import *
+from .a2pyutils.logger import Logger
 
 num_cores = multiprocessing.cpu_count()
 
-def run_train(job_id: int):
-    modelName = ''
+config = {
+    's3_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
+    's3_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+    's3_bucket_name': os.getenv('S3_BUCKET_NAME'),
+    's3_legacy_bucket_name': os.getenv('S3_LEGACY_BUCKET_NAME'),
+    's3_endpoint': os.getenv('S3_ENDPOINT')
+}
+
+def exit_error(db, working_folder, log, job_id, msg):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            UPDATE `jobs`
+            SET `remarks` = %s,
+                `state`="error",
+                `completed` = 1 ,
+                `last_update` = now()
+            WHERE `job_id` = %s
+        """, ['Error: '+str(msg), int(job_id)])
+        db.commit()
+
+    log.write(msg)
+    if os.path.exists(working_folder):
+        shutil.rmtree(working_folder)
+    sys.exit(-1)
+
+def run_train(db, job_id: int):
     project_id = -1
-    configuration = EnvironmentConfig()
-    config = configuration.data()
     log = Logger(job_id, 'train.py', 'main')
     log.also_print = True
-
-    log.write('script started with job id:'+str(job_id))
-
-    try:
-        db = MySQLdb.connect(
-            host=config[0], user=config[1],
-            passwd=config[2], db=config[3]
-        )
-    except MySQLdb.Error as e:
-        log.write("fatal error cannot connect to database. {}".format(traceback.format_exc()))
-        sys.exit(-1)
-
-
-    def exit_error(db, workingFolder, log, jobId, msg):
-        with closing(db.cursor()) as cursor:
-            cursor.execute("""
-                UPDATE `jobs`
-                SET `remarks` = %s,
-                    `state`="error",
-                    `completed` = 1 ,
-                    `last_update` = now()
-                WHERE `job_id` = %s
-            """, ['Error: '+str(msg), int(jobId)])
-            db.commit()
-
-        log.write(msg)
-        if os.path.exists(workingFolder):
-            shutil.rmtree(workingFolder)
-        sys.exit(-1)
 
     currDir = os.path.dirname(os.path.abspath(__file__))
     currPython = sys.executable
 
-    bucketName = config[4]
     awsKeyId = config[5]
     awsKeySecret = config[6]
 
@@ -97,10 +87,8 @@ def run_train(job_id: int):
         use_in_training_notpresent,
         use_in_validation_present,
         use_in_validation_notpresent,
-        name
+        model_name
     ) = row
-    modelName = unicode(name, "latin-1")
-    modelName = unidecode.unidecode(modelName)
     tempFolders = str(configuration.pathsConfig['temp_dir'])
     # select the model_type by its id
     if model_type_id in [4]:
@@ -175,7 +163,7 @@ def run_train(job_id: int):
                 for x in range(0, numSpeciesSongtype):
                     rowSpecies = cursor.fetchone()
                     speciesSongtype.append([rowSpecies[0], rowSpecies[1]])
-        except StandardError, e:
+        except e as StandardError:
             exit_error(db, workingFolder, log, job_id, 'cannot create training csvs files or access training data from db. {}'.format(traceback.format_exc()))
 
         log.write('training data retrieved')
@@ -193,14 +181,14 @@ def run_train(job_id: int):
                 useTrainingNotPresent = row[6]
                 useValidationPresent = row[7]
                 useValidationNotPresent = row[8]
-        except StandardError, e:
+        except e as StandardError:
             exit_error(db,workingFolder,log,job_id,'cannot retrieve training data from db. {}'.format(traceback.format_exc()))
             
         validationData = []
         """ Validation file creation """
         try:
-            validationFile = workingFolder+'/validation_'+str(job_id)+'.csv'
-            with open(validationFile, 'wb') as csvfile:
+            validation_file = workingFolder+'/validation_'+str(job_id)+'.csv'
+            with open(validation_file, 'wb') as csvfile:
                 spamwriter = csv.writer(csvfile, delimiter=',')
                 for x in range(0, numSpeciesSongtype):
                     spst = speciesSongtype[x]
@@ -250,14 +238,15 @@ def run_train(job_id: int):
                             spamwriter.writerow([rowValidation[0] ,rowValidation[1] ,rowValidation[2] ,rowValidation[3] , cc,rowValidation[4]])
 
             # get Amazon S3 bucket
-            conn = S3Connection(awsKeyId, awsKeySecret)
-            bucket = conn.get_bucket(bucketName)
-            valiKey = 'project_{}/validations/job_{}.csv'.format(project_id, job_id)
+            s3 = boto3.resource('s3', 
+                                aws_access_key_id=config['s3_access_key_id'], 
+                                aws_secret_access_key=config['s3_secret_access_key'],
+                                endpoint_url=config['s3_endpoint'])
+            bucket = s3.Bucket(config['s3_legacy_bucket_name'])
+            validations_key = 'project_{}/validations/job_{}.csv'.format(project_id, job_id)
 
             # save validation file to bucket
-            k = bucket.new_key(valiKey)
-            k.set_contents_from_filename(validationFile)
-            k.set_acl('public-read')
+            bucket.upload_file(validation_file, validations_key, ExtraArgs={'ACL': 'public-read'})
             # save validation to DB
             progress_steps = progress_steps + 15
             with closing(db.cursor()) as cursor:
@@ -274,8 +263,8 @@ def run_train(job_id: int):
                         NULL, %s, %s, %s, %s, %s, %s
                     )
                 """, [
-                    project_id, user_id, modelName+" validation", valiKey,
-                    json.dumps({'name': modelName}),
+                    project_id, user_id, model_name+" validation", valiKey,
+                    json.dumps({'name': model_name}),
                     job_id
                 ])
                 db.commit()
@@ -293,7 +282,7 @@ def run_train(job_id: int):
                     WHERE `job_id` = %s
                 """, [progress_steps, job_id])
                 db.commit()
-        except StandardError, e:
+        except e as StandardError:
             exit_error(db, workingFolder, log, job_id, 'cannot create validation csvs files or access validation data from db. {}'.format(traceback.format_exc()))
 
         log.write('validation data retrieved')
@@ -307,7 +296,7 @@ def run_train(job_id: int):
         try:
             # roigen defined in a2audio.training
             rois = Parallel(n_jobs=1)(delayed(roigen)(line,workingFolder,currDir,job_id,log) for line in trainingData)
-        except StandardError, e:
+        except e as StandardError:
             exit_error(db, workingFolder, log, job_id, 'roigenerator failed. {}'.format(traceback.format_exc()))
 
         if rois is None or len(rois) == 0:
@@ -356,7 +345,7 @@ def run_train(job_id: int):
                     classes[i].highestFreq,
                     classes[i].maxColumns
                 ]
-        except StandardError, e:
+        except:
             exit_error(db, workingFolder, log, job_id, 'cannot align rois. {}'.format(traceback.format_exc()))
 
         if len(patternSurfaces) == 0:
@@ -366,7 +355,7 @@ def run_train(job_id: int):
         """Recnilize"""
         try:
             results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,workingFolder,currDir,job_id,(patternSurfaces[line[4]]),log,ssim,searchMatch) for line in validationData)
-        except StandardError, e:
+        except:
             
             exit_error(db,workingFolder,log,job_id,'cannot analize recordings in parallel {}'.format(traceback.format_exc()))
         
@@ -406,7 +395,7 @@ def run_train(job_id: int):
                 else:
                     errors_count = errors_count + 1
 
-        except StandardError, e:
+        except:
             exit_error(db,workingFolder,log,job_id,'cannot add samples to model. {}'.format(traceback.format_exc()))
         log.write('errors : '+str(errors_count)+" processed: "+ str(no_errors))
         log.write('model trained')    
@@ -451,12 +440,12 @@ def run_train(job_id: int):
                 decoded = json.loads(row[0])
                 modelname = decoded['name']
                 valiId = row[1]
-        except StandardError, e:
+        except:
             exit_error(db,workingFolder,log,job_id,'error querying database. {}'.format(traceback.format_exc()))
 
         log.write('user requested : '+" "+str(useTrainingPresent)+" "+str(useTrainingNotPresent)+" "+str( useValidationPresent)+" "+str(useValidationNotPresent ))
         log.write('available validations : presents: '+str(presentsCount)+' ausents: '+str(ausenceCount) )
-        if (useTrainingPresent+useValidationPresent) > presentsCount:
+        if (useTrainingPresent + useValidationPresent) > presentsCount:
             if presentsCount <= useTrainingPresent:
                 useTrainingPresent = presentsCount - 1
                 useValidationPresent = 1
@@ -477,33 +466,33 @@ def run_train(job_id: int):
             resultSplit = False
             try:
                 resultSplit = models[i].splitData(useTrainingPresent,useTrainingNotPresent,useValidationPresent,useValidationNotPresent)
-            except StandardError, e:
+            except e as StandardError:
                 exit_error(db,workingFolder,log,job_id,'error spliting data for validation. {}'.format(traceback.format_exc()))
                 log.write('error spliting data for validation.')
             validationsKey =  'project_'+str(project_id)+'/validations/job_'+str(job_id)+'_vals.csv'
             validationsLocalFile = modelFilesLocation+'job_'+str(job_id)+'_vals.csv'
             try:
                 models[i].train()
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'error training model. {}'.format(traceback.format_exc()))
 
             if useValidationPresent > 0:
                 try:
                     models[i].validate()
                     models[i].saveValidations(validationsLocalFile)
-                except StandardError, e:
+                except:
                     exit_error(db,workingFolder,log,job_id,'error validating model. {}'.format(traceback.format_exc()))
                 
             modFile = modelFilesLocation+"model_"+str(job_id)+"_"+str(i)+".mod"
             try:
                 models[i].save(modFile,patternSurfaces[i][2] ,patternSurfaces[i][3],patternSurfaces[i][4])
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'error saving model file to local storage. {}'.format(traceback.format_exc()))
                 
             modelStats = None
             try:
                 modelStats = models[i].modelStats()
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'cannot get stats from model. {}'.format(traceback.format_exc()))
             pngKey = None
             try:
@@ -522,7 +511,7 @@ def run_train(job_id: int):
                 smax = max([max((specToShow[j])) for j in range(specToShow.shape[0])])
                 x = 255*(1-((specToShow - smin)/(smax-smin)))
                 png.from_array(x, 'L;8').save(pngFilename)
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'error creating pattern PNG. {}'.format(traceback.format_exc()))
             modKey = None  
             log.write('uploading png')
@@ -541,7 +530,7 @@ def run_train(job_id: int):
                 k = bucket.new_key(pngKey)
                 k.set_contents_from_filename(pngFilename)
                 k.set_acl('public-read')
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'error uploading files to amazon bucket. {}'.format(traceback.format_exc()))
             log.write('saving to db')        
             species,songtype = i.split("_")
@@ -595,7 +584,7 @@ def run_train(job_id: int):
                     db.commit()
                     log.write('saved to db correctly')
                     savedModel  = True
-            except StandardError, e:
+            except:
                 exit_error(db,workingFolder,log,job_id,'error saving model into database. {}'.format(traceback.format_exc()))
                 
         if savedModel :
