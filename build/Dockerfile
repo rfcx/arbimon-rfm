@@ -2,7 +2,7 @@ FROM python:3.8-buster AS arbimon-rfm
 
 # Install sox and libsndfile
 RUN apt-get update && \
-    apt-get install -y sox libsndfile-dev
+    apt-get install -y sox libsndfile-dev python3-opencv
 
 # Install Python dependencies
 ADD requirements.txt /requirements.txt

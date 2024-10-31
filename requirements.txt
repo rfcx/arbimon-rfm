@@ -5,7 +5,9 @@ matplotlib==3.6.1
 rfcx==0.2.6
 soundfile==0.12.1
 pypng==0.0.17
+scikit-image==0.16.2
 scikit-learn==0.24.2
+opencv-python==4.10.0.84
 
 # For legacy
 mysql-connector-python==8.1.0

@@ -1,24 +1,24 @@
-from a2audio.rec import Rec
-from pylab import *
+import json
+import math
 import numpy
+import os
+import random
 import time
-from skimage.measure import structural_similarity as ssim
+import warnings
+import cv2
+# from cv import *
+from contextlib import closing
+from pylab import *
+from skimage.metrics import structural_similarity as ssim
 from scipy.stats import pearsonr as prs
 from scipy.stats import kendalltau as ktau
 from scipy.spatial.distance import cityblock as ct
 from scipy.spatial.distance import cosine as csn
-import math
 from scipy.stats import *
 from scipy.signal import *
-from a2pyutils.logger import Logger
-import os
-import json
-import warnings
-from a2audio.thresholder import Thresholder
-import cv2
-from cv import *
-import random
-from contextlib import closing
+from ..a2pyutils.logger import Logger
+from .rec import Rec
+from .thresholder import Thresholder
 from .filters.resample_poly_filter import resample_poly_filter
 
 
@@ -78,9 +78,7 @@ class Recanalizer:
             self.logs.write("retrieving recording from bucket --- seconds ---" + str(time.time() - start_time))
         if self.rec.status == 'HasAudioData':
             # If the recording's sample rate is not modelSampleRate, resample the audio data
-            print "rec.sample_rate is %s (model is %s)" % (self.rec.sample_rate, self.modelSampleRate)
             if self.rec.sample_rate != self.modelSampleRate and self.modelSampleRate >= 44100:
-                print " resampling rec to %s" % self.modelSampleRate
                 self.rec_resample(self.modelSampleRate)
             maxFreqInRec = float(self.rec.sample_rate)/2.0
             if self.high >= maxFreqInRec:
@@ -373,7 +371,6 @@ class Recanalizer:
         close()
 
     def showSurface(self):
-        print numpy.min(numpy.min(self.matrixSurfacComp))
         imshow(self.matrixSurfacComp)
         show()
         close()

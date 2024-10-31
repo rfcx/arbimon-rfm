@@ -1,6 +1,9 @@
 import os
+import boto3
 from contextlib import closing
+
 from .roizer import Roizer
+from ..a2audio.recanalizer import Recanalizer
 from ..db import connect
 
 config = {
@@ -8,7 +11,7 @@ config = {
     's3_legacy_bucket_name': os.getenv('S3_LEGACY_BUCKET_NAME')
 }
 
-def roigen(line,tempFolder,currDir ,jobId,log=None):
+def roigen(line,tempFolder,currDir,jobId,log=None):
     if log is not None:
         log.write('roizing recording: '+line[7])
     db = connect()
@@ -47,4 +50,66 @@ def roigen(line,tempFolder,currDir ,jobId,log=None):
         if log is not None:
             log.write('done roizing : '+line[7])
         return [roi,str(roispeciesId)+"_"+str(roisongtypeId)]
-   
+
+def recnilize(line,workingFolder,currDir,jobId,pattern,log=None,ssim=True,searchMatch=False):
+    if log is not None:
+        log.write('analizing recording: '+line[0])
+    bucketName = config[4]
+    awsKeyId = config[5]
+    awsKeySecret = config[6]
+    recId = int(line[5])
+    db = connect()
+    conn = S3Connection(awsKeyId, awsKeySecret)
+    bucket = conn.get_bucket(bucketName)
+    pid = None
+    with closing(db.cursor()) as cursor:
+        cursor.execute('update `jobs` set `state`="processing", `progress` = `progress` + 1 ,last_update = now() where `job_id` = '+str(jobId))
+        db.commit()
+    with closing(db.cursor()) as cursor:
+        cursor.execute('SELECT `project_id` FROM `jobs` WHERE `job_id` =  '+str(jobId))
+        db.commit()
+        rowpid = cursor.fetchone()
+        pid = rowpid[0]
+    if pid is None:
+        if log is not None:
+            log.write('cannot analize '+line[0])
+        return 'err project not found'
+    bucketBase = 'project_' + str(pid) + '/training_vectors/job_' + str(jobId) + '/'
+    legacy = line[6]
+    recBucketName = bucketName if legacy else config[7]
+    recAnalized = Recanalizer(line[0], pattern[0], pattern[2], pattern[3], workingFolder,
+                              recBucketName, log, False, ssim, searchMatch, modelSampleRate=pattern[1], db=db,
+                              rec_id=recId, job_id=jobId,
+                              legacy=legacy)
+    if recAnalized.status == 'Processed':
+        recName = line[0].split('/')
+        recName = recName[len(recName)-1]
+        vectorUri = bucketBase+recName
+        fets = recAnalized.features()
+        vector = recAnalized.getVector()
+        vectorFile = workingFolder+recName
+        myfileWrite = open(vectorFile, 'wb')
+        wr = csv.writer(myfileWrite)
+        wr.writerow(vector)
+        myfileWrite.close()
+        k = bucket.new_key(vectorUri)
+        k.set_contents_from_filename(vectorFile)
+        k.set_acl('public-read')
+        info = []
+        info.append(line[4])
+        info.append(line[3])
+        info.append(pattern[4])
+        info.append(pattern[2])
+        info.append(pattern[3])
+        info.append(pattern[1])
+        info.append(line[0])
+        db.close()
+        if log is not None:
+            log.write('done analizing '+line[0])
+        return {'fets':fets,'info':info}
+    else:
+        if log is not None:
+            log.write('cannot analize '+line[0])
+            log.write(recAnalized.status)
+        db.close()
+        return 'err ' + recAnalized.status
