@@ -20,7 +20,7 @@ from ..a2pyutils.logger import Logger
 from .rec import Rec
 from .thresholder import Thresholder
 from .filters.resample_poly_filter import resample_poly_filter
-
+from .constants import FREQUENCIES_44100
 
 class Recanalizer:
     def __init__(self, uri, speciesSurface, low, high, tempFolder, bucketName, logs=None,test=False,ssim=True,searchMatch=False,db=None,rec_id=None,job_id=None,modelSampleRate=44100,legacy=True):
@@ -280,12 +280,11 @@ class Recanalizer:
         return self.spec
 
     def spectrogram(self):
-        freqs44100 = json.load(file('scripts/data/freqs.json'))['freqs']
         maxHertzInRec = float(self.rec.sample_rate)/2.0
         i = 0
         nfft = 512
         if self.rec.sample_rate <= 44100:
-            while i<len(freqs44100) and freqs44100[i] <= maxHertzInRec:
+            while i<len(FREQUENCIES_44100) and FREQUENCIES_44100[i] <= maxHertzInRec:
                 i = i + 1
             nfft = i
         start_time = time.time()
@@ -325,18 +324,18 @@ class Recanalizer:
         i = 0
         j = 0
         if self.rec.sample_rate <= 44100:
-            i = len(freqs44100) - 1
+            i = len(FREQUENCIES_44100) - 1
             j = i
-            while freqs44100[i] > self.high and i>=0:
+            while FREQUENCIES_44100[i] > self.high and i>=0:
                 j = j -1
                 i = i -1
 
-            while freqs44100[j] > self.low and j>=0:
+            while FREQUENCIES_44100[j] > self.low and j>=0:
                 j = j -1
-            self.speclow = len(freqs44100) - j - 2
-            self.spechigh = len(freqs44100) - i - 2
-            if self.speclow >= len(freqs44100):
-                self.speclow = len(freqs44100)-1
+            self.speclow = len(FREQUENCIES_44100) - j - 2
+            self.spechigh = len(FREQUENCIES_44100) - i - 2
+            if self.speclow >= len(FREQUENCIES_44100):
+                self.speclow = len(FREQUENCIES_44100)-1
             if self.spechigh < 0:
                 self.spechigh = 0
         else:

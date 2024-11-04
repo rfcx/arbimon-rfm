@@ -100,16 +100,19 @@ def update_validations(db, project_id, user_id, model_name, validations_key, job
                 project_id, user_id, model_name+" validation", validations_key,
                 json.dumps({'name': model_name}), job_id])
         db.commit()
+        validation_set_id = cursor.lastrowid
 
         cursor.execute("""
             UPDATE `job_params_training` SET `validation_set_id` = %s
-            WHERE `job_id` = %s""", [cursor.lastrowid, job_id])
+            WHERE `job_id` = %s""", [validation_set_id, job_id])
         db.commit()
 
         cursor.execute("""
             UPDATE `jobs` SET `progress_steps` = %s, progress=0, state="processing"
             WHERE `job_id` = %s""", [progress_steps, job_id])
         db.commit()
+
+    return validation_set_id
 
 
 def update_job_error(db, job_id, msg):
@@ -124,7 +127,6 @@ def update_job_error(db, job_id, msg):
         """, ['Error: '+str(msg), int(job_id)])
         db.commit()
 
-
 def update_job_last_update(db, job_id):
     with closing(db.cursor()) as cursor:
         cursor.execute("""
@@ -132,4 +134,13 @@ def update_job_last_update(db, job_id):
             SET `last_update`=now()
             WHERE `job_id` = %s
         """, [job_id])
+        db.commit()
+
+def update_job_progress(db, job_id: int, progress_increment = 1):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            UPDATE `jobs`
+            SET `state` = "processing", `progress` = `progress` + %s
+            WHERE `job_id` = %s
+        """, [progress_increment, job_id])
         db.commit()

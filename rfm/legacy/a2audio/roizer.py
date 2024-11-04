@@ -2,13 +2,14 @@ from pylab import *
 from matplotlib import *
 import numpy
 import math
-import json
 
+from .constants import FREQUENCIES_44100
 from .rec import Rec
+
 
 class Roizer:
 
-    def __init__(self, uri ,tempFolder,bucketName ,iniSecs=5,endiSecs=15,lowFreq = 1000, highFreq = 2000, legacy=True):
+    def __init__(self, uri, tempFolder, bucketName, iniSecs=5, endiSecs=15, lowFreq = 1000, highFreq = 2000, legacy=True):
         
         if type(uri) is not str and type(uri) is not unicode:
             raise ValueError("uri must be a string")
@@ -72,16 +73,15 @@ class Roizer:
         if endSample >= len(self.original):
            endSample = len(self.original) - 1
 
-        freqs44100 = json.load(file('scripts/data/freqs.json'))['freqs']
         maxHertzInRec = float(self.sample_rate)/2.0
         nfft = 512
         targetrows = 512
         if self.sample_rate <= 44100:
             i = 0
-            while i<len(freqs44100) and freqs44100[i] <= maxHertzInRec :
+            while i<len(FREQUENCIES_44100) and FREQUENCIES_44100[i] <= maxHertzInRec :
                 i = i + 1
             nfft = i
-            targetrows = len(freqs44100)
+            targetrows = len(FREQUENCIES_44100)
         data = self.original[initSample:endSample]
         Pxx, freqs, bins = mlab.specgram(data, NFFT=nfft*2, Fs=self.sample_rate, noverlap=nfft)
         if self.sample_rate < 44100:

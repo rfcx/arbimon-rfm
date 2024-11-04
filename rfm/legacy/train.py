@@ -15,9 +15,9 @@ from pylab import *
 
 from .a2audio.model import Model
 from .a2audio.roiset import Roiset
-from .a2audio.training import roigen
+from .a2audio.training import recnilize, roigen
 from .a2pyutils.logger import Logger
-from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_validations
+from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations
 
 num_cores = multiprocessing.cpu_count()
 
@@ -91,12 +91,12 @@ def run_train(job_id: int):
     # training data file creation
     try:
         training_data, species_songtypes = get_training_data(db, training_set_id)
-        progress_steps = len(training_data)
-        log.write(f'training data contains {progress_steps} rows')
+        log.write(f'training data retrieved ({len(training_data)} rows)')
         write_training_data(training_set_id, job_id, working_folder, training_data)
+        log.write('training data saved')
     except Exception:
         exit_error(db, log, job_id, 'cannot create training csvs files or access training data from db. {}'.format(traceback.format_exc()))
-    log.write('training data retrieved')
+    progress_steps = len(training_data)
 
     # validation data file creation    
     validation_data = []
@@ -106,6 +106,7 @@ def run_train(job_id: int):
             spamwriter = csv.writer(csvfile, delimiter=',')
             for (species_id, songtype_id) in species_songtypes:
                 validation_rows = get_validation_data(db, project_id, species_id, songtype_id, use_training_p+use_validation_p, use_training_np+use_validation_np)
+                log.write(f'found {len(validation_rows)} validation rows for species {species_id} songtype {songtype_id}')
                 progress_steps = progress_steps + len(validation_rows)
                 for row in validation_rows:
                     ispresent = 0
@@ -116,19 +117,21 @@ def run_train(job_id: int):
                     spamwriter.writerow([row[0], row[1], row[2], row[3], cc, row[4]])
     except Exception:
         exit_error(db, log, job_id, 'cannot access validation data from db. {}'.format(traceback.format_exc()))
+    log.write(f'validation data retrieved (total {len(validation_data)} rows)')
 
     # save validation file to bucket and update db
     try:
         validations_key = 'project_{}/validations/job_{}.csv'.format(project_id, job_id)
         upload_file(validation_file, validations_key)
+        log.write('validation data uploaded')
 
         progress_steps = progress_steps + 15
-        update_validations(db, project_id, user_id, model_name, validations_key, job_id, progress_steps)
+        validation_set_id = update_validations(db, project_id, user_id, model_name, validations_key, job_id, progress_steps)
+        log.write(f'validation set id {validation_set_id}')
     except Exception:
         exit_error(db, log, job_id, 'cannot create validation csvs files or access validation data from db. {}'.format(traceback.format_exc()))
-    log.write('validation data retrieved')
+    log.write('validation preparation complete')
     
-
     """Roigenerator"""
     try:
         # roigen defined in a2audio.training
@@ -189,31 +192,27 @@ def run_train(job_id: int):
     if len(pattern_surfaces) == 0:
         exit_error(db, log, job_id, 'cannot create pattern surface from rois')
     log.write('rois aligned, pattern surface created')
-    results = None
+
     """Recnilize"""
     try:
         results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,working_folder,currDir,job_id,(pattern_surfaces[line[4]]),log,True,False) for line in validation_data)
     except Exception:
-        
-        exit_error(db, log, job_id,' cannot analize recordings in parallel {}'.format(traceback.format_exc()))
-    
-    if results is None:
-        exit_error(db, log, job_id, 'cannot analize recordings')
+        exit_error(db, log, job_id,' cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
     log.write('validation recordings analyzed')
-    presentsCount = 0
-    ausenceCount = 0
-    processed_count = 0
+    
+    presence_count = 0
+    absence_count = 0
     for res in results:
         if 'err' not in res:
             if int(res['info'][1]) == 0:
-                ausenceCount = ausenceCount + 1
+                absence_count = absence_count + 1
             if int(res['info'][1]) == 1:
-                presentsCount = presentsCount + 1            
+                presence_count = presence_count + 1            
         else:
             log.write(res)
 
-    if presentsCount < 2 and ausenceCount < 2:
-        exit_error(db, log, job_id, 'not enough validations to create model')
+    if presence_count < 2 and absence_count < 2:
+        exit_error(db, log, job_id, 'not enough validation recnilize results to create model')
     
     """Add samples to model"""
     models = {}
@@ -237,64 +236,28 @@ def run_train(job_id: int):
         exit_error(db, log, job_id, 'cannot add samples to model. {}'.format(traceback.format_exc()))
     log.write('errors : '+str(errors_count)+" processed: "+ str(no_errors))
     log.write('model trained')
-    project_id = None
-    user_id = None
-    modelname = None
-    valiId = None
-    model_type_id = None	
-    training_set_id = None
-    use_training_p = None
-    use_training_np = None
-    use_validation_p = None
-    use_validation_np = None
-    """Get params from database"""
+
+
     try:
-        with closing(db.cursor()) as cursor:
-        
-            cursor.execute("SELECT `project_id`,`user_id` FROM `jobs` WHERE `job_id` = "+str(job_id))
-            db.commit()
-            row = cursor.fetchone()
-            project_id = row[0]	
-            user_id = row[1] 	
-        
-            cursor.execute("SELECT * FROM `job_params_training` WHERE `job_id` = "+str(job_id))
-            db.commit()
-            row = cursor.fetchone()
-            model_type_id = row[1]	
-            training_set_id = row[2]
-            use_training_p = row[5]
-            use_training_np = row[6]
-            use_validation_p = row[7]
-            use_validation_np = row[8]
-        
-            cursor.execute("SELECT `params`,`validation_set_id` FROM `validation_set` WHERE `job_id` = "+str(job_id))
-            db.commit()
-            row = cursor.fetchone()
-            
-            cursor.execute('update `jobs` set `state`="processing", `progress` = `progress` + 5 where `job_id` = '+str(job_id))
-            db.commit()
-            
-            decoded = json.loads(row[0])
-            modelname = decoded['name']
-            valiId = row[1]
+        update_job_progress(db, job_id, 5)
     except Exception:
         exit_error(db, log, job_id, 'error querying database. {}'.format(traceback.format_exc()))
 
     log.write('user requested : '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
-    log.write('available validations : presents: '+str(presentsCount)+' ausents: '+str(ausenceCount) )
-    if (use_training_p + use_validation_p) > presentsCount:
-        if presentsCount <= use_training_p:
-            use_training_p = presentsCount - 1
+    log.write('available validations : presents: '+str(presence_count)+' ausents: '+str(absence_count) )
+    if (use_training_p + use_validation_p) > presence_count:
+        if presence_count <= use_training_p:
+            use_training_p = presence_count - 1
             use_validation_p = 1
         else:
-            use_validation_p = presentsCount - use_training_p
+            use_validation_p = presence_count - use_training_p
     
-    if (use_training_np + use_validation_np) > ausenceCount:
-        if ausenceCount <= use_training_np:
-            use_training_np = ausenceCount - 1
+    if (use_training_np + use_validation_np) > absence_count:
+        if absence_count <= use_training_np:
+            use_training_np = absence_count - 1
             use_validation_np = 1
         else:
-            use_validation_np = ausenceCount - use_training_np
+            use_validation_np = absence_count - use_training_np
     log.write('user requested : '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
 
     savedModel = False
@@ -326,9 +289,8 @@ def run_train(job_id: int):
         except Exception:
             exit_error(db, log, job_id, 'error saving model file to local storage. {}'.format(traceback.format_exc()))
             
-        modelStats = None
         try:
-            modelStats = models[i].modelStats()
+            model_stats = models[i].modelStats()
         except Exception:
             exit_error(db, log, job_id, 'cannot get stats from model. {}'.format(traceback.format_exc()))
         pngKey = None
@@ -336,9 +298,9 @@ def run_train(job_id: int):
             
             pngFilename = modelFilesLocation+'job_'+str(job_id)+'_'+str(i)+'.png'
             pngKey = 'project_'+str(project_id)+'/models/job_'+str(job_id)+'_'+str(i)+'.png'
-            specToShow = numpy.zeros(shape=(0,int(modelStats[4].shape[1])))
-            rowsInSpec = modelStats[4].shape[0]
-            spec = modelStats[4]
+            specToShow = numpy.zeros(shape=(0,int(model_stats[4].shape[1])))
+            rowsInSpec = model_stats[4].shape[0]
+            spec = model_stats[4]
             spec[spec == -10000] = float('nan')
             for j in range(0,rowsInSpec):
                 if abs(sum(spec[j,:])) > 0.0:
@@ -372,36 +334,26 @@ def run_train(job_id: int):
         log.write('saving to db')        
         species,songtype = i.split("_")
         try:
+            update_job_progress(db, job_id, 5)
             #save model to DB
-            with closing(db.cursor()) as cursor:
-                cursor.execute('update `jobs` set `state`="processing", `progress` = `progress` + 5 where `job_id` = '+str(job_id))
-                db.commit()        
-                cursor.execute("SELECT   max(ts.`x2` -  ts.`x1`) , min(ts.`y1`) , max(ts.`y2`) "+
-                    "FROM `training_set_roi_set_data` ts "+
-                    "WHERE  ts.`training_set_id` =  "+str(training_set_id))
-                db.commit()
-                row = cursor.fetchone()
-                lengthRoi = row[0]	
-                minFrequ = row[1]
-                maxFrequ = row[2]
-                
-                cursor.execute("SELECT   count(*) "+
-                    "FROM `training_set_roi_set_data` ts "+
-                    "WHERE  ts.`training_set_id` =  "+str(training_set_id))
-                db.commit()
-                row = cursor.fetchone()
-                totalRois = row[0]
+            with closing(db.cursor()) as cursor:      
+
+                lengthRoi = max([x2-x1 for (_, _, _, x1, x2, *_rest) in training_data])
+                minFrequ = min([y1 for (_, _, _, _, _, y1, *_rest) in training_data])
+                maxFrequ = max([y2 for (_, _, _, _, _, _, y2, *_rest) in training_data])
+                totalRois = len(training_data)
+                log.write(f'calculated training data stats: lengthRoi={lengthRoi}, minFrequ={minFrequ}, maxFrequ={maxFrequ}, totalRois={totalRois}')
                 
                 statsJson = '{"roicount":'+str(totalRois)+' , "roilength":'+str(lengthRoi)+' , "roilowfreq":'+str(minFrequ)+' , "roihighfreq":'+str(maxFrequ)
-                statsJson = statsJson + ',"accuracy":'+str(modelStats[0])+' ,"precision":'+str(modelStats[1])+',"sensitivity":'+str(modelStats[2])
-                statsJson = statsJson + ', "forestoobscore" :'+str(modelStats[3])+' , "roisamplerate" : '+str(pattern_surfaces[i][1])+' , "roipng":"'+pngKey+'"'
-                statsJson = statsJson + ', "specificity":'+str(modelStats[5])+' , "tp":'+str(modelStats[6])+' , "fp":'+str(modelStats[7])+' '
-                statsJson = statsJson + ', "tn":'+str(modelStats[8])+' , "fn":'+str(modelStats[9])+' , "minv": '+str(modelStats[10])+', "maxv": '+str(modelStats[11])+'}'
+                statsJson = statsJson + ',"accuracy":'+str(model_stats[0])+' ,"precision":'+str(model_stats[1])+',"sensitivity":'+str(model_stats[2])
+                statsJson = statsJson + ', "forestoobscore" :'+str(model_stats[3])+' , "roisamplerate" : '+str(pattern_surfaces[i][1])+' , "roipng":"'+pngKey+'"'
+                statsJson = statsJson + ', "specificity":'+str(model_stats[5])+' , "tp":'+str(model_stats[6])+' , "fp":'+str(model_stats[7])+' '
+                statsJson = statsJson + ', "tn":'+str(model_stats[8])+' , "fn":'+str(model_stats[9])+' , "minv": '+str(model_stats[10])+', "maxv": '+str(model_stats[11])+'}'
             
                 cursor.execute("INSERT INTO `models`(`name`, `model_type_id`, `uri`, `date_created`, `project_id`, `user_id`,"+
                             " `training_set_id`, `validation_set_id`) " +
-                            " VALUES ('"+modelname+"', "+str(model_type_id)+" , '"+modKey+"' , now() , "+str(project_id)+","+
-                            str(user_id)+" ,"+str(training_set_id)+", "+str(valiId)+" )")
+                            " VALUES ('"+model_name+"', "+str(model_type_id)+" , '"+modKey+"' , now() , "+str(project_id)+","+
+                            str(user_id)+" ,"+str(training_set_id)+", "+str(validation_set_id)+" )")
                 db.commit()
                 insertmodelId = cursor.lastrowid
                 
