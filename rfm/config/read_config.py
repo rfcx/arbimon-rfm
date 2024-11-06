@@ -5,9 +5,7 @@ from .validate_config import validate_config
 
 log = get_logger()
 
-default_config = {
-    'soundscape_normalize': 1
-}
+default_config = {}
 
 def read_config() -> dict:
     env_config = read_config_from_env()
