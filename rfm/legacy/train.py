@@ -67,7 +67,6 @@ def upload_file(local_path, key):
 def run_train(job_id: int):
     log = Logger(job_id, 'train.py', 'main')
     log.also_print = True
-    currDir = os.path.dirname(os.path.abspath(__file__)) # todo: remove?
 
     db = connect()
 
@@ -135,7 +134,7 @@ def run_train(job_id: int):
     """Roigenerator"""
     try:
         # roigen defined in a2audio.training
-        rois = Parallel(n_jobs=1)(delayed(roigen)(line,working_folder,currDir,job_id,log) for line in training_data)
+        rois = Parallel(n_jobs=num_cores)(delayed(roigen)(line,working_folder,job_id,log) for line in training_data)
     except Exception:
         exit_error(db, log, job_id, 'roigenerator failed. {}'.format(traceback.format_exc()))
 
@@ -195,7 +194,7 @@ def run_train(job_id: int):
 
     """Recnilize"""
     try:
-        results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,working_folder,currDir,job_id,(pattern_surfaces[line[4]]),log,True,False) for line in validation_data)
+        results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,working_folder,job_id,(pattern_surfaces[line[4]]),log,True,False) for line in validation_data)
     except Exception:
         exit_error(db, log, job_id,' cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
     log.write('validation recordings analyzed')
@@ -234,7 +233,7 @@ def run_train(job_id: int):
 
     except Exception:
         exit_error(db, log, job_id, 'cannot add samples to model. {}'.format(traceback.format_exc()))
-    log.write('errors : '+str(errors_count)+" processed: "+ str(no_errors))
+    log.write('errors: '+str(errors_count)+" processed: "+ str(no_errors))
     log.write('model trained')
 
 
@@ -243,8 +242,8 @@ def run_train(job_id: int):
     except Exception:
         exit_error(db, log, job_id, 'error querying database. {}'.format(traceback.format_exc()))
 
-    log.write('user requested : '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
-    log.write('available validations : presents: '+str(presence_count)+' ausents: '+str(absence_count) )
+    log.write('user requested: '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
+    log.write('available validations: presents: '+str(presence_count)+' absents: '+str(absence_count) )
     if (use_training_p + use_validation_p) > presence_count:
         if presence_count <= use_training_p:
             use_training_p = presence_count - 1
@@ -258,14 +257,13 @@ def run_train(job_id: int):
             use_validation_np = 1
         else:
             use_validation_np = absence_count - use_training_np
-    log.write('user requested : '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
+    log.write('user requested: '+" "+str(use_training_p)+" "+str(use_training_np)+" "+str( use_validation_p)+" "+str(use_validation_np ))
 
     savedModel = False
     # """ Create and save model """
     for i in models:
-        resultSplit = False
         try:
-            resultSplit = models[i].splitData(use_training_p,use_training_np,use_validation_p,use_validation_np)
+            models[i].splitData(use_training_p,use_training_np,use_validation_p,use_validation_np)
         except Exception:
             exit_error(db, log, job_id, 'error spliting data for validation. {}'.format(traceback.format_exc()))
             log.write('error spliting data for validation.')
@@ -295,8 +293,7 @@ def run_train(job_id: int):
             exit_error(db, log, job_id, 'cannot get stats from model. {}'.format(traceback.format_exc()))
         pngKey = None
         try:
-            
-            pngFilename = modelFilesLocation+'job_'+str(job_id)+'_'+str(i)+'.png'
+            pngFilename = working_folder+'job_'+str(job_id)+'_'+str(i)+'.png'
             pngKey = 'project_'+str(project_id)+'/models/job_'+str(job_id)+'_'+str(i)+'.png'
             specToShow = numpy.zeros(shape=(0,int(model_stats[4].shape[1])))
             rowsInSpec = model_stats[4].shape[0]
@@ -313,31 +310,23 @@ def run_train(job_id: int):
         except Exception:
             exit_error(db, log, job_id, 'error creating pattern PNG. {}'.format(traceback.format_exc()))
         modKey = None  
-        log.write('uploading png')
+        log.write('uploading files')
         try:
-            conn = S3Connection(config['s3_access_key_id'], config['s3_secret_access_key'])
-            bucket = conn.get_bucket(bucketName)
-            modKey = 'project_'+str(project_id)+'/models/job_'+str(job_id)+'_'+str(i)+'.mod'
             #save model file to bucket
-            k = bucket.new_key(modKey)
-            k.set_contents_from_filename(modFile)
+            modKey = 'project_'+str(project_id)+'/models/job_'+str(job_id)+'_'+str(i)+'.mod'
+            upload_file(modFile, modKey)
             #save validations results to bucket
-            k = bucket.new_key(validationsKey)
-            k.set_contents_from_filename(validationsLocalFile)
-            k.set_acl('public-read')
+            upload_file(validationsLocalFile, validationsKey)
             #save vocalization surface png to bucket
-            k = bucket.new_key(pngKey)
-            k.set_contents_from_filename(pngFilename)
-            k.set_acl('public-read')
+            upload_file(pngFilename, pngKey)
         except Exception:
-            exit_error(db, log, job_id, 'error uploading files to amazon bucket. {}'.format(traceback.format_exc()))
+            exit_error(db, log, job_id, 'error uploading files to bucket. {}'.format(traceback.format_exc()))
         log.write('saving to db')        
         species,songtype = i.split("_")
         try:
             update_job_progress(db, job_id, 5)
             #save model to DB
             with closing(db.cursor()) as cursor:      
-
                 lengthRoi = max([x2-x1 for (_, _, _, x1, x2, *_rest) in training_data])
                 minFrequ = min([y1 for (_, _, _, _, _, y1, *_rest) in training_data])
                 maxFrequ = max([y2 for (_, _, _, _, _, _, y2, *_rest) in training_data])
@@ -356,18 +345,12 @@ def run_train(job_id: int):
                             str(user_id)+" ,"+str(training_set_id)+", "+str(validation_set_id)+" )")
                 db.commit()
                 insertmodelId = cursor.lastrowid
-                
                 cursor.execute("INSERT INTO `model_stats`(`model_id`, `json_stats`) VALUES ("+str(insertmodelId)+",'"+statsJson+"')")
                 db.commit()
-                
                 cursor.execute("INSERT INTO `model_classes`(`model_id`, `species_id`, `songtype_id`) VALUES ("+str(insertmodelId)
                             +","+str(species)+","+str(songtype)+")")
                 db.commit()       
-                
                 cursor.execute('update `job_params_training` set `trained_model_id` = '+str(insertmodelId)+' where `job_id` = '+str(job_id))
-                db.commit()
-                
-                cursor.execute('update `jobs` set `last_update` = now() where `job_id` = '+str(job_id))
                 db.commit()
                 cursor.execute('update `jobs` set `state`="completed", `progress` = `progress_steps` ,  `completed` = 1 , `last_update` = now() where `job_id` = '+str(job_id))
                 db.commit()

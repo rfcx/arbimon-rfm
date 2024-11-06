@@ -26,6 +26,8 @@ class Model:
         self.jobId = jobid
         
     def addSample(self,present,row,uri):
+        if numpy.any(numpy.isnan(row)):
+            row = [numpy.float32(0) if numpy.isnan(x) else x for x in row]
         self.classes.append(str(present))
         self.uris.append(uri)
         if self.minv > row[3]:
@@ -40,21 +42,19 @@ class Model:
     def splitData(self,useTrainingPresent,useTrainingNotPresent,useValidationPresent,useValidationNotPresent):
         self.splitParams = [useTrainingPresent,useTrainingNotPresent,useValidationPresent,useValidationNotPresent]
 
-        presentIndeces = [i for i, j in zip(count(), self.classes) if j == '1' or j == 1]
+        presentIndices = [i for i, j in zip(count(), self.classes) if j == '1' or j == 1]
         notPresentIndices = [i for i, j in zip(count(), self.classes) if j == '0' or j == 0]
         
-        if(len(presentIndeces) < 1):
+        if(len(presentIndices) < 1):
             return False
         if(len(notPresentIndices) < 1):
             return False
           
-        random.shuffle(presentIndeces)
+        random.shuffle(presentIndices)
         random.shuffle(notPresentIndices)
         
-        self.trainDataIndices = presentIndeces[:useTrainingPresent] + notPresentIndices[:useTrainingNotPresent]
-        self.validationDataIndices = presentIndeces[useTrainingPresent:(useTrainingPresent+useValidationPresent)] + notPresentIndices[useTrainingNotPresent:(useTrainingNotPresent+useValidationNotPresent)]
-        
-        return True
+        self.trainDataIndices = presentIndices[:useTrainingPresent] + notPresentIndices[:useTrainingNotPresent]
+        self.validationDataIndices = presentIndices[useTrainingPresent:(useTrainingPresent+useValidationPresent)] + notPresentIndices[useTrainingNotPresent:(useTrainingNotPresent+useValidationNotPresent)]
     
     def getModel(self):
         return self.clf
@@ -76,7 +76,7 @@ class Model:
         self.outuris = [self.uris[i] for i in self.validationDataIndices]
         self.outurisTraining = [self.uris[i] for i in self.trainDataIndices]
         predictions = self.clf.predict(self.data[self.validationDataIndices])
-        self.validationpredictions = predictions;
+        self.validationpredictions = predictions
         presentIndeces = [i for i, j in zip(count(), classSubset) if j == '1' or j == 1] 
         notPresentIndices = [i for i, j in zip(count(), classSubset) if j == '0' or j == 0]
         minamxdata = self.data[self.validationDataIndices]
@@ -128,7 +128,6 @@ class Model:
     
     def save(self,filename,l,h,c):
         with open(filename, 'wb') as output:
-            pickler = pickle.Pickler(output, -1)
             pickle.dump([self.clf,self.speciesSpec,l,h,c], output, -1)
             
     def getSpec(self):
@@ -141,7 +140,7 @@ class Model:
         return self.data
     
     def saveValidations(self,filename):
-        with open(filename, 'wb') as csvfile:
+        with open(filename, 'w') as csvfile:
             spamwriter = csv.writer(csvfile, delimiter=',')
             for i in range(0,len(self.outClasses)):
                 spamwriter.writerow([self.outuris[i],self.outClasses[i],self.validationpredictions[i],'validation'])

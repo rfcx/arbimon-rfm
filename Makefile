@@ -50,9 +50,11 @@ shell: build
 serve-up:
 	@echo "\n${BLUE}Running docker compose up...${NC}\n"
 	@docker compose up -d --wait --build
-	@echo "\n${BLUE}Seeding s3mock... (might take a few minutes)${NC}\n"
 	@sleep 3
+	@echo "\n${BLUE}Seeding s3mock core bucket... (might take a few minutes)${NC}\n"
 	@docker compose run --rm -v ${PWD}/store/mock-data/core-bucket:/up -v ${PWD}/store/upload.sh:/upload.sh -e UPLOAD_FOLDER=/up app bash /upload.sh
+	@echo "\n${BLUE}Seeding s3mock legacy bucket... (might take even longer!)${NC}\n"
+	@docker compose run --rm -v ${PWD}/store/mock-data/legacy-bucket:/up -v ${PWD}/store/upload.sh:/upload.sh -e UPLOAD_FOLDER=/up -e S3_BUCKET_NAME=legacy-bucket app bash /upload.sh
 	@echo "\n${BLUE}Dev environment ready!"
 	@echo "    use \`make serve-run SCRIPT=batch_legacy\` to run"
 	@echo "    use \`make serve-down\` when you are finished${NC}\n"

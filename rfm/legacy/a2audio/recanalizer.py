@@ -63,10 +63,10 @@ class Recanalizer:
         self.rec_id = rec_id
         self.job_id = job_id
         self.legacy = legacy
-        if self.logs:
-           self.logs.write("processing: "+self.uri)
-        if self.logs :
-            self.logs.write("configuration time --- seconds ---" + str(time.time() - start_time))
+        # if self.logs:
+        #    self.logs.write("processing: "+self.uri)
+        # if self.logs :
+        #     self.logs.write("configuration time --- seconds ---" + str(time.time() - start_time))
 
         if not test:
             self.process()
@@ -85,25 +85,25 @@ class Recanalizer:
                 self.status = 'CannotProcess'
             else:
                 start_time = time.time()
-                start_time_all = time.time()
+                # start_time_all = time.time()
                 self.spectrogram()
                 if self.spec.shape[1] < 2*self.speciesSurface.shape[1]:
                     self.status = 'AudioIsShort'
-                    if self.logs:
-                        self.logs.write("spectrogrmam --- seconds ---" + str(time.time() - start_time))
+                    # if self.logs:
+                    #     self.logs.write("spectrogrmam --- seconds ---" + str(time.time() - start_time))
                 else:
-                    if self.logs:
-                        self.logs.write("spectrogrmam --- seconds ---" + str(time.time() - start_time))
-                    start_time = time.time()
+                    # if self.logs:
+                    #     self.logs.write("spectrogrmam --- seconds ---" + str(time.time() - start_time))
+                    # start_time = time.time()
                     self.featureVector_search()
 
-                    if self.db:
-                        elapsed = time.time() - start_time_all
-                        with closing(self.db.cursor()) as cursor:
-                            cursor.execute('insert into  `recanalizer_stats` (job_id,rec_id,exec_time) VALUES('+str(self.job_id)+','+str(self.rec_id)+','+str(elapsed)+')')
-                            self.db.commit()
-                    if self.logs:
-                        self.logs.write("feature vector --- seconds ---" + str(time.time() - start_time))
+                    # if self.db:
+                    #     elapsed = time.time() - start_time_all
+                    #     with closing(self.db.cursor()) as cursor:
+                    #         cursor.execute('insert into  `recanalizer_stats` (job_id,rec_id,exec_time) VALUES('+str(self.job_id)+','+str(self.rec_id)+','+str(elapsed)+')')
+                    #         self.db.commit()
+                    # if self.logs:
+                    #     self.logs.write("feature vector --- seconds ---" + str(time.time() - start_time))
                     self.status = 'Processed'
         else:
             self.status = self.rec.status
@@ -148,10 +148,10 @@ class Recanalizer:
     def featureVector_search(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if self.logs:
-               self.logs.write("featureVector start")
-            if self.logs:
-               self.logs.write(self.uri)
+            # if self.logs:
+            #    self.logs.write("featureVector start")
+            # if self.logs:
+            #    self.logs.write(self.uri)
 
             self.matrixSurfacComp = numpy.copy(self.speciesSurface[self.spechigh:self.speclow,:])
             removeUnwanted = self.matrixSurfacComp == -10000
@@ -173,10 +173,10 @@ class Recanalizer:
     def featureVector(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if self.logs:
-               self.logs.write("featureVector start")
-            if self.logs:
-               self.logs.write(self.uri)
+            # if self.logs:
+            #    self.logs.write("featureVector start")
+            # if self.logs:
+            #    self.logs.write(self.uri)
             pieces = self.uri.split('/')
             self.distances = []
             currColumns = self.spec.shape[1]
@@ -293,8 +293,8 @@ class Recanalizer:
         if self.rec.sample_rate < 44100:
             self.rec.sample_rate = 44100
         dims =  Pxx.shape
-        if self.logs:
-            self.logs.write("mlab.specgram --- seconds ---" + str(time.time() - start_time))
+        # if self.logs:
+        #     self.logs.write("mlab.specgram --- seconds ---" + str(time.time() - start_time))
 
         i = 0
         j = 0
@@ -354,9 +354,9 @@ class Recanalizer:
             if self.spechigh < 0:
                 self.spechigh = 0
         Z = np.flipud(Z)
-        if self.logs:
-            self.logs.write("spec hi : %s spec low: %s" % (self.spechigh, self.speclow))
-            self.logs.write('logs and flip ---' + str(time.time() - start_time))
+        # if self.logs:
+        #     self.logs.write("spec hi : %s spec low: %s" % (self.spechigh, self.speclow))
+        #     self.logs.write('logs and flip ---' + str(time.time() - start_time))
         self.spec = Z
 
     def showVectAndSpec(self):

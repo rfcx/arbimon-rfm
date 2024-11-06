@@ -140,7 +140,7 @@ def update_job_progress(db, job_id: int, progress_increment = 1):
     with closing(db.cursor()) as cursor:
         cursor.execute("""
             UPDATE `jobs`
-            SET `state` = "processing", `progress` = `progress` + %s
+            SET `state` = "processing", `progress` = `progress` + %s, `last_update` = now()
             WHERE `job_id` = %s
         """, [progress_increment, job_id])
         db.commit()

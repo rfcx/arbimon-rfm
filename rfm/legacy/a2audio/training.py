@@ -5,7 +5,7 @@ from contextlib import closing
 
 from .roizer import Roizer
 from ..a2audio.recanalizer import Recanalizer
-from ..db import connect
+from ..db import connect, update_job_progress
 
 config = {
     's3_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
@@ -21,7 +21,7 @@ def upload_file(local_path, key):
     bucket = s3.Bucket(config['s3_legacy_bucket_name'])
     bucket.upload_file(local_path, key, ExtraArgs={'ACL': 'public-read'})
 
-def roigen(line,tempFolder,currDir,jobId,log=None):
+def roigen(line,tempFolder,jobId,log=None):
     if log is not None:
         log.write('roizing recording: '+line[7])
     db = connect()
@@ -61,15 +61,13 @@ def roigen(line,tempFolder,currDir,jobId,log=None):
             log.write('done roizing: '+line[7])
         return [roi,str(roispeciesId)+"_"+str(roisongtypeId)]
 
-def recnilize(line,workingFolder,currDir,jobId,pattern,log=None,ssim=True,searchMatch=False):
+def recnilize(line,workingFolder,jobId,pattern,log=None,ssim=True,searchMatch=False):
     if log is not None:
         log.write('recnilizing recording: '+line[0])
     recId = int(line[5])
     db = connect()
     pid = None
-    with closing(db.cursor()) as cursor:
-        cursor.execute('update `jobs` set `state`="processing", `progress` = `progress` + 1 ,last_update = now() where `job_id` = '+str(jobId))
-        db.commit()
+    update_job_progress(db, jobId)
     with closing(db.cursor()) as cursor:
         cursor.execute('SELECT `project_id` FROM `jobs` WHERE `job_id` =  '+str(jobId))
         rowpid = cursor.fetchone()
@@ -111,7 +109,6 @@ def recnilize(line,workingFolder,currDir,jobId,pattern,log=None,ssim=True,search
         return {'fets':fets,'info':info}
     else:
         if log is not None:
-            log.write('cannot recnilize '+line[0])
-            log.write(recAnalized.status)
+            log.write('failed recnilizing: '+line[0]+', reason='+recAnalized.status)
         db.close()
         return 'err ' + recAnalized.status

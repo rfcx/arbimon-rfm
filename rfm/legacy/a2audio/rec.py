@@ -98,10 +98,7 @@ class Rec:
 
     def process(self):
         start_time = time.time()
-        if self.legacy and not self.getAudioFromLegacyUri():
-            self.status = 'KeyNotFound'
-            return None
-        if not self.legacy and not self.getAudioFromUri():
+        if not self.getAudioFromUri():
             self.status = 'KeyNotFound'
             return None
 
@@ -144,48 +141,6 @@ class Rec:
         except:
             print(("missing file. {} {}".format(self.bucket, self.uri)))
             return False
-        return True
-
-    def getAudioFromLegacyUri(self, retries=6):
-        start_time = time.time()
-        f = None
-        url = 'https://s3.amazonaws.com/' + self.bucket + '/' + self.uri
-        if self.logs:
-            print(url + ' to ' + self.localfilename)
-        retryCount = 0
-        while not f and retryCount < retries:
-            try:
-                f = urllib.request.urlopen(url)
-            except http.client.HTTPException as e:
-                print((traceback.format_exc()))
-                time.sleep(1.5**retryCount)  # exponential waiting
-            except urllib.error.HTTPError as e:
-                print((traceback.format_exc()))
-                time.sleep(1.5**retryCount)  # exponential waiting
-            except urllib.error.URLError as e:
-                print((traceback.format_exc()))
-                time.sleep(1.5**retryCount)  # exponential waiting
-            retryCount += 1
-
-        if f:
-            if self.logs:
-                print('urlopen success')
-            try:
-                with open(self.localfilename, "wb") as local_file:
-                    local_file.write(f.read())
-            except:
-                if self.logs:
-                    print('error f.read')
-                return False
-        else:
-            if self.logs:
-                print("url error. {}".format(traceback.format_exc()))
-            return False
-
-        if self.logs:
-            print('f.read success')
-            print("retrieve recording:" +
-                            str(time.time() - start_time))
         return True
 
     def parseEncoding(self, enc_key):
