@@ -1,9 +1,3 @@
-from a2pyutils.logger import Logger
-from a2pyutils.config import EnvironmentConfig
-from a2audio.recanalizer import Recanalizer
-from a2pyutils.jobs_lib import cancelStatus
-from soundscape.set_visual_scale_lib import *
-import time
 import contextlib
 import tempfile
 import shutil
@@ -14,8 +8,33 @@ from joblib import Parallel, delayed
 import pickle
 import csv
 import json
+import sys
 
-classificationCanceled =False
+from .a2pyutils.logger import Logger
+from .a2audio.recanalizer import Recanalizer
+from .db import connect, update_job_error, update_job_last_update, update_job_progress, update_validations
+from .storage import upload_file, download_file
+
+
+classificationCanceled = False
+
+def exit_error(db, log, job_id, msg):
+    log.write(msg)
+    update_job_error(db, msg, job_id)
+    remove_working_folder(job_id)
+    sys.exit(-1)
+
+def get_working_folder(job_id):
+    temp_folder = tempfile.gettempdir()
+    working_folder = temp_folder+"/job_"+str(job_id)+"/"
+    if not os.path.exists(working_folder):
+        os.makedirs(working_folder)
+    return working_folder
+
+def remove_working_folder(job_id):
+    working_folder = get_working_folder(job_id)
+    if os.path.exists(working_folder):
+        shutil.rmtree(working_folder)
 
 def get_classification_job_data(db,jobId):
     try:
@@ -60,19 +79,6 @@ def get_model_params(db,classifierId,log):
     }
 
 
-def create_temp_dir(jobId,log):
-    try:
-        tempFolders = tempfile.gettempdir()
-        workingFolder = tempFolders+"/job_"+str(jobId)+'/'
-        if os.path.exists(workingFolder):
-            shutil.rmtree(workingFolder)
-        os.makedirs(workingFolder)
-    except:
-        exit_error("Could not create temporary directory, {}".format(traceback.format_exc()))
-    if not os.path.exists(workingFolder):
-        exit_error('fatal error creating directory, {}'.format(traceback.format_exc()),-1,log)
-    return workingFolder
-
 def get_playlist(db,playlistId,log):
     try:
         recsToClassify = []
@@ -88,43 +94,61 @@ def get_playlist(db,playlistId,log):
                 rowclassification = cursor.fetchone()
                 recsToClassify.append(rowclassification)
     except:
-        exit_error("Could not generate playlist array, {}".format(traceback.format_exc()))
+        exit_error(db, log, job_id, "Could not generate playlist array, {}".format(traceback.format_exc()))
     if len(recsToClassify) < 1:
-        exit_error('No recordngs in playlist, {}'.format(traceback.format_exc()),-1,log)
+        exit_error(db, log, job_id, 'No recordngs in playlist, {}'.format(traceback.format_exc()),-1,log)
     return recsToClassify
 
-def set_progress_params(db,progress_steps, jobId):
+def set_progress_params(db,progress_steps, job_id):
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
                 UPDATE `jobs`
                 SET `progress_steps`=%s, progress=0, state="processing"
                 WHERE `job_id` = %s
-            """, [progress_steps*2+5, jobId])
+            """, [progress_steps*2+5, job_id])
             db.commit()
     except:
-        exit_error("Could not set progress params, {}".format(traceback.format_exc()))
+        exit_error(db, log, job_id, "Could not set progress params, {}".format(traceback.format_exc()))
 
-def insert_rec_error(db, recId, jobId):
+def insert_rec_error(db, rec_id, job_id):
     error = traceback.format_exc()
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
                 INSERT INTO `recordings_errors`(`recording_id`, `job_id`, `error`)
                 VALUES (%s, %s, %s)
-            """, [recId, jobId, error])
+            """, [rec_id, job_id, error])
             db.commit()
     except:
-        exit_error("Could not insert recording error, {}.\n\n ORIGINAL ERROR: {}".format(traceback.format_exc(), error))
+        exit_error(db, log, job_id, "Could not insert recording error, {}.\n\n ORIGINAL ERROR: {}".format(traceback.format_exc(), error))
 
+def cancelStatus(db, job_id, rmFolder=None,quitj=True):
+    status = None
+    with contextlib.closing(db.cursor()) as cursor:
+        cursor.execute('select `cancel_requested` from `jobs` where `job_id` = '+str(job_id))
+        (status,) = cursor.fetchone()
+        if status and int(status) > 0:
+            cursor.execute('update `jobs` set `state` = "canceled", last_update = now() where `job_id` = '+str(job_id))
+            db.commit()
+            print('job canceled')
+            if rmFolder:
+                if os.path.exists(rmFolder):
+                    shutil.rmtree(rmFolder)
+            if quitj:
+                quit()
+            else:
+                return True
+        else:
+            return False
 
-def classify_rec(rec, model_specs, workingFolder, log, config, jobId):
+def classify_rec(rec, model_specs, working_folder, log, job_id):
     global classificationCanceled
     if classificationCanceled:
         return None
     errorProcessing = False
-    db = get_db(config)
-    if cancelStatus(db,jobId,workingFolder,False):
+    db = connect()
+    if cancelStatus(db,job_id,working_folder,False):
         classificationCanceled = True
         quit()
     recAnalized = None
@@ -149,7 +173,7 @@ def classify_rec(rec, model_specs, workingFolder, log, config, jobId):
                                   model_data[1],
                                   float(model_data[2]),
                                   float(model_data[3]),
-                                  workingFolder,
+                                  working_folder,
                                   bucketName,
                                   log,
                                   False,
@@ -162,7 +186,7 @@ def classify_rec(rec, model_specs, workingFolder, log, config, jobId):
                 UPDATE `jobs`
                 SET `progress` = `progress` + 1, last_update = NOW()
                 WHERE `job_id` = %s
-            """, [jobId])
+            """, [job_id])
             db.commit()
     except:
         errorProcessing = True
@@ -191,7 +215,7 @@ def classify_rec(rec, model_specs, workingFolder, log, config, jobId):
     else:
         errorProcessing = True
     if errorProcessing:
-        insert_rec_error(db,rec['recording_id'],jobId)
+        insert_rec_error(db,rec['recording_id'],job_id)
         db.close()
         return None
     else:
@@ -200,25 +224,20 @@ def classify_rec(rec, model_specs, workingFolder, log, config, jobId):
         return {'uri':rec['uri'],'id':rec['recording_id'],'f':featvector,'ft':fets,'r':res[0]}
 
 
-def get_model(db, model_specs, config, log, workingFolder):
-    log.write('reaching bucket.')
-    modelLocal = workingFolder+'model.mod'
-    bucket = get_bucket(config)
+def get_model(db, model_specs, log, working_folder, job_id):
+    log.write('downloading model from bucket')
+    model_local = working_folder+'model.mod'
     try:
-        log.write('getting aws file key...')
-        k = bucket.get_key(model_specs['uri'], validate=False)
-        log.write('contents to filename...')
-        k.get_contents_to_filename(modelLocal)
-
+        download_file(model_specs['uri'], model_local)
     except:
-        exit_error('fatal error model {} not found in aws, {}'.format(model_specs['uri'], traceback.format_exc()), -1, log)
+        exit_error(db, log, job_id, 'fatal error model {} not found in aws, {}'.format(model_specs['uri'], traceback.format_exc()), -1, log)
 
-    log.write('model in local file system.')
+    log.write('model in local file system')
     model_specs['model'] = None
 
     log.write('loading model to memory...')
-    if os.path.isfile(modelLocal):
-        model_data = pickle.load(open(modelLocal, "rb"))
+    if os.path.isfile(model_local):
+        model_data = pickle.load(open(model_local, "rb"))
         if isinstance(model_data, dict):
             # future model formats (they should be pickled as a dict)
             model_specs = model_data
@@ -226,7 +245,7 @@ def get_model(db, model_specs, config, log, workingFolder):
             # current style models (they're pickled as a list)
             model_specs['data'] = model_data
     else:
-        exit_error('fatal error cannot load model, {}'.format(traceback.format_exc()), -1, log)
+        exit_error(db, log, job_id, 'fatal error cannot load model, {}'.format(traceback.format_exc()), -1, log)
     log.write('model was loaded to memory.')
     log.write('model #%d for species %s songtype %s. template shape is %s, with frequencies from %s to %s' % (
         model_specs['id'],
@@ -258,7 +277,6 @@ def get_model(db, model_specs, config, log, workingFolder):
     return model_specs
 
 def write_vector(recUri,tempFolder,featvector):
-    print 'write_vector', recUri,tempFolder,featvector
     vectorLocal = None
     try:
         recName = recUri.split('/')
@@ -269,24 +287,19 @@ def write_vector(recUri,tempFolder,featvector):
         wr.writerow(featvector)
         myfileWrite.close()
     except:
-        print 'ERROR:: {}'.format(traceback.format_exc())
+        print('ERROR:: {}'.format(traceback.format_exc()))
         return None
     return vectorLocal
 
-def upload_vector(uri,filen,config,rid,db,jobId):
+def upload_vector(uri,filen,rid,db,jobId):
     try:
-        bucket = get_bucket(config)
-        k = bucket.new_key(uri)
-        k.set_contents_from_filename(filen)
-        k.set_acl('public-read')
+        upload_file(filen, uri)
         os.remove(filen)
     except:
         insert_rec_error(db, rid, jobId)
 
-def insert_result_to_db(config,jId, recId, species, songtype, presence, maxV):
-    db = None
+def insert_result_to_db(db, jId, recId, species, songtype, presence, maxV):
     try:
-        db = get_db(config)
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
                 INSERT INTO `classification_results` (
@@ -301,7 +314,7 @@ def insert_result_to_db(config,jId, recId, species, songtype, presence, maxV):
         insert_rec_error(db, recId, jId)
     db.close()
 
-def processResults(res,workingFolder,config,modelUri,jobId,species,songtype,db, log):
+def processResults(res,working_folder,modelUri,job_id,species,songtype,db,log):
     minVectorVal = 9999999.0
     maxVectorVal = -9999999.0
     processed = 0
@@ -312,13 +325,13 @@ def processResults(res,workingFolder,config,modelUri,jobId,species,songtype,db, 
                     UPDATE `jobs`
                     SET `progress` = `progress` + 1, last_update = NOW()
                     WHERE `job_id` = %s
-                """, [jobId])
+                """, [job_id])
                 db.commit()
             if r and 'id' in r:
                 processed = processed + 1
                 recName = r['uri'].split('/')
                 recName = recName[len(recName)-1]
-                localFile = write_vector(r['uri'],workingFolder,r['f'])
+                localFile = write_vector(r['uri'],working_folder,r['f'])
                 if localFile is not None:
                     maxv = max(r['f'])
                     minv = min(r['f'])
@@ -327,9 +340,9 @@ def processResults(res,workingFolder,config,modelUri,jobId,species,songtype,db, 
                     if maxVectorVal < float(maxv):
                         maxVectorVal = maxv
                     vectorUri = '{}/classification_{}_{}.vector'.format(
-                            modelUri.replace('.mod', ''), jobId, recName
+                            modelUri.replace('.mod', ''), job_id, recName
                     )
-                    upload_vector(vectorUri,localFile,config,r['id'],db,jobId)
+                    upload_vector(vectorUri,localFile,r['id'],db,job_id)
                     log.write("inserting results from {rid} for {sp} {st} into the database ({r}, maxv:{maxv})".format(
                         rid=r['id'],
                         r=r['r'],
@@ -337,41 +350,50 @@ def processResults(res,workingFolder,config,modelUri,jobId,species,songtype,db, 
                         st=songtype,
                         maxv=maxv
                     ))
-                    insert_result_to_db(config,jobId,r['id'], species, songtype,r['r'],maxv)
+                    insert_result_to_db(db, job_id,r['id'], species, songtype,r['r'],maxv)
                 else:
                     log.write('localFile is None')
-                    insert_rec_error(db, r['id'], jobId)
+                    insert_rec_error(db, r['id'], job_id)
     except:
-        exit_error('cannot process results. {}'.format(traceback.format_exc()))
+        exit_error(db, log, job_id, 'cannot process results. {}'.format(traceback.format_exc()))
     return {"t":processed,"stats":{"minv": float(minVectorVal), "maxv": float(maxVectorVal)}}
 
-def run_pattern_matching(jobId, model_specs, playlistId, log, config, ncpu):
+def run_classification(job_id):
     global classificationCanceled
-    db = None
-    try:
-        db = get_db(config)
-        num_cores = multiprocessing.cpu_count()
-        if int(ncpu)>0:
-            num_cores = int(ncpu)
-        log.write('using Pattern Matching algorithm' )
-        workingFolder = create_temp_dir(jobId,log)
-        log.write('created working directory.')
-        recsToClassify = get_playlist(db,playlistId,log)
-        log.write('playlist generated.')
-        cancelStatus(db,jobId,workingFolder)
-        set_progress_params(db,len(recsToClassify), jobId)
-        log.write('job progress set to start.')
-        model_specs = get_model(db, model_specs, config, log, workingFolder)
-        cancelStatus(db,jobId,workingFolder)
-        log.write('model was fetched.')
-    except:
-        log.write('ERROR:: {}'.format(traceback.format_exc()))
-        return False
-    log.write('starting parallel for.')
+
+    log = Logger(job_id, 'classification.py', 'main')
+    log.also_print = True
+    
+    db = connect()
+    (classifier_id, _, _, _, playlist_id, ncpu) = get_classification_job_data(db, job_id)
+    log.write('job data fetched.')
+
+    model_specs = get_model_params(db, classifier_id, log)
+    log.write('model params fetched. %s' % str(model_specs))
+
+    if model_specs['model_type_id'] != 4:
+        log.write("unknown model type requested")
+        sys.exit(-1)
+
+    num_cores = multiprocessing.cpu_count()
+    if int(ncpu) > 0:
+        num_cores = int(ncpu)
+    
+    working_folder = get_working_folder(job_id)
+    log.write('created working directory.')
+    recs = get_playlist(db,playlist_id,log)
+    log.write('playlist generated.')
+    set_progress_params(db,len(recs), job_id)
+    log.write('job progress set to start.')
+    model_specs = get_model(db, model_specs, log, working_folder, job_id)
+    log.write('model was fetched.')
+    cancelStatus(db,job_id,working_folder)
     db.close()
+
+    log.write('starting parallel for.')
     try:
-        resultsParallel = Parallel(n_jobs=num_cores)(
-            delayed(classify_rec)(rec, model_specs, workingFolder, log, config, jobId) for rec in recsToClassify
+        results = Parallel(n_jobs=num_cores)(
+            delayed(classify_rec)(rec, model_specs, working_folder, log, job_id) for rec in recs
         )
     except:
         log.write('ERROR:: {}'.format(traceback.format_exc()))
@@ -379,32 +401,33 @@ def run_pattern_matching(jobId, model_specs, playlistId, log, config, ncpu):
             log.write('job cancelled')
         return False
     log.write('done parallel execution.')
-    db = get_db(config)
-    cancelStatus(db,jobId,workingFolder)
+    
+    db = connect()
+    cancelStatus(db,job_id,working_folder)
     try:
-        jsonStats = processResults(resultsParallel, workingFolder, config, model_specs['uri'], jobId, model_specs['species'], model_specs['songtype'], db, log)
+        stats = processResults(results, working_folder, model_specs['uri'], job_id, model_specs['species'], model_specs['songtype'], db, log)
     except:
         log.write('ERROR:: {}'.format(traceback.format_exc()))
         return False
     log.write('computed stats.')
-    shutil.rmtree(workingFolder)
+    shutil.rmtree(working_folder)
     log.write('removed folder.')
-    statsJson = jsonStats['stats']
-    if jsonStats['t'] < 1:
+    statsJson = stats['stats']
+    if stats['t'] < 1:
         exit_error('no recordings processed. {}'.format(traceback.format_exc()))
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
                 INSERT INTO `classification_stats` (`job_id`, `json_stats`)
                 VALUES (%s, %s)
-            """, [jobId, json.dumps(statsJson)])
+            """, [job_id, json.dumps(statsJson)])
             db.commit()
             cursor.execute("""
                 UPDATE `jobs`
                 SET `progress` = `progress_steps`, `completed` = 1,
                     state="completed", `last_update` = now()
                 WHERE `job_id` = %s
-            """, [jobId])
+            """, [job_id])
             db.commit()
         db.close()
         return True
@@ -413,36 +436,5 @@ def run_pattern_matching(jobId, model_specs, playlistId, log, config, ncpu):
         log.write('ERROR:: {}'.format(traceback.format_exc()))
         return False
 
-def run_classification(jobId):
-    try:
-        start_time = time.time()
-        log = Logger(jobId, 'classification.py', 'main')
-        log.also_print = True
-        configuration = EnvironmentConfig()
-        config = configuration.data()
-        bucketName = config[4]
-        db = get_db(config)
-        log.write('database connection succesful')
-        (
-            classifierId, projectId, userId,
-            classificationName, playlistId, ncpu
-        ) = get_classification_job_data(db,jobId)
-        log.write('job data fetched.')
 
-        model_specs = get_model_params(db, classifierId, log)
-        log.write('model params fetched. %s' % str(model_specs))
-
-        db.close()
-    except:
-        log.write('ERROR:: {}'.format(traceback.format_exc()))
-        return False
-
-    if model_specs['model_type_id'] in [4]:
-        retValue = run_pattern_matching(jobId, model_specs, playlistId, log, config, ncpu)
-        return retValue
-    elif model_specs['model_type_id'] in [-1]:
-        pass
-        """Entry point for new model types"""
-    else:
-        log.write("Unkown model type")
-        return False
+        

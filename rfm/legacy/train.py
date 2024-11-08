@@ -4,8 +4,6 @@ import csv
 import multiprocessing
 import traceback
 import shutil
-import json
-import boto3
 import numpy
 import png
 import tempfile
@@ -18,16 +16,9 @@ from .a2audio.roiset import Roiset
 from .a2audio.training import recnilize, roigen
 from .a2pyutils.logger import Logger
 from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations
+from .storage import upload_file
 
 num_cores = multiprocessing.cpu_count()
-
-config = {
-    's3_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
-    's3_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
-    's3_bucket_name': os.getenv('S3_BUCKET_NAME'),
-    's3_legacy_bucket_name': os.getenv('S3_LEGACY_BUCKET_NAME'),
-    's3_endpoint': os.getenv('S3_ENDPOINT')
-}
 
 def exit_error(db, log, job_id, msg):
     log.write(msg)
@@ -58,12 +49,6 @@ def write_training_data(training_set_id, job_id, working_folder, training_data):
         for row in training_data:
             spamwriter.writerow(row + (job_id,))
 
-def upload_file(local_path, key):
-    s3 = boto3.resource('s3', aws_access_key_id=config['s3_access_key_id'], 
-                        aws_secret_access_key=config['s3_secret_access_key'], endpoint_url=config['s3_endpoint'])
-    bucket = s3.Bucket(config['s3_legacy_bucket_name'])
-    bucket.upload_file(local_path, key, ExtraArgs={'ACL': 'public-read'})
-
 def run_train(job_id: int):
     log = Logger(job_id, 'train.py', 'main')
     log.also_print = True
@@ -80,6 +65,7 @@ def run_train(job_id: int):
     log.write("project_id={} training_set_id={} model_name={}".format(project_id, training_set_id, model_name))
     if model_type_id != 4:
         log.write("unknown model type requested")
+        sys.exit(-1)
 
     # creating a temporary folder
     remove_working_folder(job_id)
@@ -196,7 +182,7 @@ def run_train(job_id: int):
     try:
         results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,working_folder,job_id,(pattern_surfaces[line[4]]),log,True,False) for line in validation_data)
     except Exception:
-        exit_error(db, log, job_id,' cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
+        exit_error(db, log, job_id, ' cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
     log.write('validation recordings analyzed')
     
     presence_count = 0
