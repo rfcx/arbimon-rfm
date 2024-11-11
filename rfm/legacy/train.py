@@ -182,7 +182,7 @@ def run_train(job_id: int):
     try:
         results = Parallel(n_jobs=num_cores)(delayed(recnilize)(line,working_folder,job_id,(pattern_surfaces[line[4]]),log,True,False) for line in validation_data)
     except Exception:
-        exit_error(db, log, job_id, ' cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
+        exit_error(db, log, job_id, 'cannot analyze recordings in parallel {}'.format(traceback.format_exc()))
     log.write('validation recordings analyzed')
     
     presence_count = 0

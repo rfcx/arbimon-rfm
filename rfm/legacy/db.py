@@ -1,6 +1,7 @@
 import json
 import os
 import mysql.connector
+import traceback
 from contextlib import closing
 
 config = {
@@ -124,7 +125,7 @@ def update_job_error(db, job_id, msg):
                 `completed` = 1 ,
                 `last_update` = now()
             WHERE `job_id` = %s
-        """, ['Error: '+str(msg), int(job_id)])
+        """, ['Error: '+str(msg), job_id])
         db.commit()
 
 def update_job_last_update(db, job_id):
@@ -143,4 +144,61 @@ def update_job_progress(db, job_id: int, progress_increment = 1):
             SET `state` = "processing", `progress` = `progress` + %s, `last_update` = now()
             WHERE `job_id` = %s
         """, [progress_increment, job_id])
+        db.commit()
+
+def set_progress_params(db, progress_steps, job_id):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            UPDATE `jobs`
+            SET `progress_steps`=%s, progress=0, state="processing"
+            WHERE `job_id` = %s
+        """, [progress_steps*2+5, job_id])
+        db.commit()
+
+def get_classification_job_data(db, job_id):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            SELECT jp.model_id, j.`project_id`, j.`user_id`,
+                jp.name, jp.playlist_id, j.ncpu
+            FROM `jobs` j
+            JOIN `job_params_classification` jp ON jp.job_id = j.job_id
+            WHERE j.`job_id` = %s
+        """, [job_id])
+        (model_id, project_id, user_id, name, playlist_id, ncpu) = cursor.fetchone()
+    return model_id, project_id, user_id, name, playlist_id, ncpu
+
+def get_model_params(db, classifier_id):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            SELECT m.`model_type_id`,m.`uri`,ts.`species_id`,ts.`songtype_id`
+            FROM `models` m JOIN `training_sets_roi_set` ts ON m.`training_set_id` = ts.`training_set_id`
+            WHERE `model_id` = %s
+        """, [classifier_id])
+        (model_type_id, uri, species_id, songtype_id) = cursor.fetchone()
+    return {
+        'id': classifier_id,
+        'model_type_id': model_type_id,
+        'uri': uri,
+        'species': species_id,
+        'songtype': songtype_id,
+    }
+
+def get_playlist(db, playlist_id):
+    recs = []
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            SELECT r.`recording_id`, r.`uri`, IF(LEFT(r.uri, 8) = 'project_', 1, 0) legacy
+            FROM `recordings` r JOIN `playlist_recordings` pr ON r.`recording_id` = pr.`recording_id`
+            WHERE pr.`playlist_id` = %s
+        """, [playlist_id])
+        recs = [row for row in cursor]
+    return recs
+
+def insert_rec_error(db, rec_id, job_id):
+    error = traceback.format_exc()
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            INSERT INTO `recordings_errors`(`recording_id`, `job_id`, `error`)
+            VALUES (%s, %s, %s)
+        """, [rec_id, job_id, error])
         db.commit()
