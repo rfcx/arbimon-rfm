@@ -191,7 +191,7 @@ def get_playlist(db, playlist_id):
             FROM `recordings` r JOIN `playlist_recordings` pr ON r.`recording_id` = pr.`recording_id`
             WHERE pr.`playlist_id` = %s
         """, [playlist_id])
-        recs = [row for row in cursor]
+        recs = [{"recording_id": r_id, "uri": uri, "legacy": legacy} for (r_id, uri, legacy) in cursor]
     return recs
 
 def insert_rec_error(db, rec_id, job_id):

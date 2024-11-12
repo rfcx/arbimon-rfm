@@ -71,7 +71,6 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
         use_ssim = True
         if len(model_data) > 5:
             use_ssim = model_data[5]
-
         bucket_name = storage_config['s3_legacy_bucket_name'] if rec['legacy'] else storage_config['s3_bucket_name']
         rec_analized = Recanalizer(rec['uri'],
                                   model_data[1],
@@ -178,7 +177,7 @@ def get_model(db, model_specs, log, working_folder, job_id):
                 model_specs['species'],
                 model_specs['songtype'],
             ])
-            model_specs["sample_rate"] = cursor.fetchone()["sample_rate"]
+            model_specs["sample_rate"] = cursor.fetchone()[0]
         log.write('model sampling rate is {}'.format(model_specs["sample_rate"]))
 
     return model_specs
@@ -189,7 +188,7 @@ def write_vector(rec_uri, temp_folder, featvector):
         rec_name = rec_uri.split('/')
         rec_name = rec_name[len(rec_name)-1]
         vector_local = temp_folder+rec_name+'.vector'
-        file = open(vector_local, 'wb')
+        file = open(vector_local, 'w')
         wr = csv.writer(file)
         wr.writerow(featvector)
         file.close()
@@ -219,7 +218,6 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
             db.commit()
     except Exception:
         insert_rec_error(db, rec_id, job_id)
-    db.close()
 
 def process_results(res, working_folder, model_uri, job_id, species, songtype, db, log):
     min_vector_val = 9999999.0
