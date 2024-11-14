@@ -33,7 +33,7 @@ def resample_poly_filter_window(up, down, beta=5.0, L=16001):
     firstnull = (np.argmin(np.abs(ffilt[bot:top])) + bot)/NBINS
 
     # generate the proper shifted filter
-    filt2 = firwin(L, -firstnull+2.0/max_rate, window=('kaiser', beta))
+    filt2 = firwin(L, abs(firstnull+2.0/max_rate), window=('kaiser', beta))
 
     return filt2
 
