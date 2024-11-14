@@ -31,9 +31,10 @@ def resample_poly_filter_window(up, down, beta=5.0, L=16001):
     bot = int(np.floor(NBINS/max_rate))
     top = int(np.ceil(NBINS*(1.0/max_rate + 2.0*sfact/L)))
     firstnull = (np.argmin(np.abs(ffilt[bot:top])) + bot)/NBINS
+    proper_rate = abs(firstnull+2.0/max_rate) if max_rate > 3 else (1.0/max_rate)
 
     # generate the proper shifted filter
-    filt2 = firwin(L, abs(firstnull+2.0/max_rate), window=('kaiser', beta))
+    filt2 = firwin(L, proper_rate, window=('kaiser', beta))
 
     return filt2
 
