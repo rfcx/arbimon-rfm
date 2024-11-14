@@ -6,6 +6,7 @@ from contextlib import closing
 
 config = {
     'db_host': os.getenv('DB_HOST'),
+    'db_port': int(os.getenv('DB_PORT', '3306')),
     'db_user': os.getenv('DB_USER'),
     'db_password': os.getenv('DB_PASSWORD'),
     'db_name': os.getenv('DB_NAME'),
@@ -14,6 +15,7 @@ config = {
 def connect():
     return mysql.connector.connect(
         host=config['db_host'],
+        port=config['db_port'],
         user=config['db_user'],
         password=config['db_password'], 
         database=config['db_name']
