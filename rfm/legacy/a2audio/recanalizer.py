@@ -1,4 +1,3 @@
-import json
 import math
 import numpy
 import os
@@ -6,14 +5,8 @@ import random
 import time
 import warnings
 import cv2
-# from cv import *
-from contextlib import closing
 from pylab import *
 from skimage.metrics import structural_similarity as ssim
-from scipy.stats import pearsonr as prs
-from scipy.stats import kendalltau as ktau
-from scipy.spatial.distance import cityblock as ct
-from scipy.spatial.distance import cosine as csn
 from scipy.stats import *
 from scipy.signal import *
 from ..a2pyutils.logger import Logger
@@ -46,7 +39,7 @@ class Recanalizer:
             raise ValueError("logs must be a a2pyutils.Logger object")
         self.ssim = ssim
         self.step = 32
-        start_time = time.time()
+        # start_time = time.time()
         self.low = float(low)
         self.high = float(high)
         self.columns = speciesSurface.shape[1]

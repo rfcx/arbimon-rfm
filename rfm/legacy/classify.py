@@ -15,6 +15,7 @@ from .a2audio.recanalizer import Recanalizer
 from .db import connect, get_classification_job_data, get_model_params, get_playlist, insert_rec_error, set_progress_params, update_job_error
 from .storage import upload_file, download_file, config as storage_config
 
+FORCE_SEQUENTIAL_EXECUTION = os.getenv('FORCE_SEQUENTIAL_EXECUTION') == '1'
 
 classificationCanceled = False
 
@@ -291,35 +292,42 @@ def run_classification(job_id):
         num_cores = int(ncpu)
     
     working_folder = get_working_folder(job_id)
-    log.write('created working directory.')
+    log.write('created working directory')
     try:
         recs = get_playlist(db, playlist_id)
     except Exception:
         exit_error(db, log, job_id, "could not get playlist, {}".format(traceback.format_exc()))
     if len(recs) < 1:
         exit_error(db, log, job_id, 'no recordings in playlist, {}'.format(traceback.format_exc()))
-    log.write('playlist generated.')
+    log.write('playlist generated')
     try:
         set_progress_params(db,len(recs), job_id)
     except Exception:
         exit_error(db, log, job_id, "could not set progress params, {}".format(traceback.format_exc()))
-    log.write('job progress set to start.')
+    log.write('job progress set to start')
     model_specs = get_model(db, model_specs, log, working_folder, job_id)
-    log.write('model was fetched.')
+    log.write('model was fetched')
     cancel_status(db, job_id, working_folder)
     db.close()
 
-    log.write('starting parallel for.')
+    log.write('starting parallel classify of recs')
     try:
-        results = Parallel(n_jobs=num_cores)(
-            delayed(classify_rec)(rec, model_specs, working_folder, log, job_id) for rec in recs
-        )
+        if FORCE_SEQUENTIAL_EXECUTION:
+            log.write('sequential mode for testing')
+            results = []
+            for rec in recs:
+                result = classify_rec(rec, model_specs, working_folder, log, job_id)
+                results.append(result)
+        else:
+            results = Parallel(n_jobs=num_cores)(
+                delayed(classify_rec)(rec, model_specs, working_folder, log, job_id) for rec in recs
+            )
     except Exception:
         log.write('ERROR::parallel classify_rec {}'.format(traceback.format_exc()))
         if classificationCanceled:
             log.write('job cancelled')
         return False
-    log.write('done parallel execution.')
+    log.write('done parallel classify')
     
     db = connect()
     cancel_status(db, job_id, working_folder)
@@ -328,9 +336,9 @@ def run_classification(job_id):
     except Exception:
         log.write('ERROR:: {}'.format(traceback.format_exc()))
         return False
-    log.write('computed stats.')
+    log.write('computed stats')
     shutil.rmtree(working_folder)
-    log.write('removed folder.')
+    log.write('removed folder')
     stats_json = stats['stats']
     if stats['t'] < 1:
         exit_error(db, log, job_id, 'no recordings processed. {}'.format(traceback.format_exc()))
