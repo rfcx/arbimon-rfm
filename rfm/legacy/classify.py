@@ -212,12 +212,11 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
                 INSERT INTO `classification_results` (
                     job_id, recording_id, species_id, songtype_id, present,
                     max_vector_value
-                ) VALUES (%s, %s, %s, %s, %s,
-                    %s
-                )
-            """, [job_id, rec_id, species, songtype, presence, max_v])
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+            """, [job_id, rec_id, species, songtype, presence, float(max_v)])
             db.commit()
     except Exception:
+        print('ERROR writing {}'.format(traceback.format_exc()))
         insert_rec_error(db, rec_id, job_id)
 
 def process_results(res, working_folder, model_uri, job_id, species, songtype, db, log):
