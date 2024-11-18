@@ -105,7 +105,7 @@ class Recanalizer:
         return self.rec
 
     def instanceRec(self):
-        self.rec = Rec(str(self.uri),self.tempFolder,self.bucketName,None,legacy=self.legacy)
+        self.rec = Rec(str(self.uri),self.tempFolder,self.bucketName,legacy=self.legacy)
 
     def getVector(self ):
         return self.distances
