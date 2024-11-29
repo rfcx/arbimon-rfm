@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: arbimon-rfm-config
-  namespace: production
+  namespace: arbimon-jobs-production
 data:
   DB_HOST: arbimon-legacy-production-cluster.cluster-c5wfntyhgru5.eu-west-1.rds.amazonaws.com
   DB_NAME: arbimon2
