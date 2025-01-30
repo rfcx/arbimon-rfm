@@ -90,6 +90,14 @@ def run_train(job_id: int):
         with open(validation_file, 'w') as csvfile:
             spamwriter = csv.writer(csvfile, delimiter=',')
             for (species_id, songtype_id) in species_songtypes:
+                # validation row indexs
+                # 0 = uri
+                # 1 = species_id
+                # 2 = songtype_id
+                # 3 = present
+                # 4 = present_review
+                # 5 = recording_id
+                # 6 = legacy (1, 0)
                 validation_rows = get_validation_data(db, project_id, species_id, songtype_id, use_training_p+use_validation_p, use_training_np+use_validation_np)
                 log.write(f'found {len(validation_rows)} validation rows for species {species_id} songtype {songtype_id}')
                 progress_steps = progress_steps + len(validation_rows)

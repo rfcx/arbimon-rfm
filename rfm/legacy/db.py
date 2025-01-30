@@ -30,6 +30,15 @@ def get_training_job(db, job_id):
         (project_id, user_id, model_type_id, training_set_id, model_name) = cursor.fetchone()
     return (project_id, user_id, model_type_id, training_set_id, model_name)
 
+def get_retraining_job(db, job_id):
+    with closing(db.cursor()) as cursor:
+        cursor.execute("""
+            SELECT trained_job_id
+            FROM `job_params_retraining`
+            WHERE job_id = %s""", [job_id])
+        (trained_job_id) = cursor.fetchone()
+    return (trained_job_id)
+
 def get_training_job_params(db, job_id):
     with closing(db.cursor()) as cursor:
         cursor.execute("""

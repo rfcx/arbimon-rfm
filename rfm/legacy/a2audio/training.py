@@ -52,7 +52,7 @@ def roigen(line,tempFolder,jobId,log=None):
             db.commit()
         db.close()
         if log is not None:
-            log.write('cannot roize : '+line[7])
+            log.write('cannot roize : '+line[7]+' '+ str(recId)+','+str(jobId))
             log.write(roi.status)
         return 'err'
     else:            
@@ -61,22 +61,31 @@ def roigen(line,tempFolder,jobId,log=None):
             log.write('done roizing: '+line[7])
         return [roi,str(roispeciesId)+"_"+str(roisongtypeId)]
 
-def recnilize(line,workingFolder,jobId,pattern,log=None,ssim=True,searchMatch=False):
+# line indexes
+# 0 = uri (required)
+# 1 = species_id (not required)
+# 2 = songtype_id (not required)
+# 3 = present (required)
+# 4 = species_id_songtype_id (required)
+# 5 = recording_id (not required)
+# 6 = legacy (1, 0) (required)
+def recnilize(line,workingFolder,jobId,pattern,log=None,ssim=True,searchMatch=False, isRetrain=False):
     if log is not None:
         log.write('recnilizing recording: '+line[0])
     recId = int(line[5])
     db = connect()
-    pid = None
     update_job_progress(db, jobId)
-    with closing(db.cursor()) as cursor:
-        cursor.execute('SELECT `project_id` FROM `jobs` WHERE `job_id` =  '+str(jobId))
-        rowpid = cursor.fetchone()
-        pid = rowpid[0]
-    if pid is None:
-        if log is not None:
-            log.write('cannot recnilize '+line[0])
-        return 'err project not found'
-    bucketBase = 'project_' + str(pid) + '/training_vectors/job_' + str(jobId) + '/'
+    if isRetrain is False:
+        pid = None
+        with closing(db.cursor()) as cursor:
+            cursor.execute('SELECT `project_id` FROM `jobs` WHERE `job_id` =  '+str(jobId))
+            rowpid = cursor.fetchone()
+            pid = rowpid[0]
+        if pid is None:
+            if log is not None:
+                log.write('cannot recnilize '+line[0])
+            return 'err project not found'
+        bucketBase = 'project_' + str(pid) + '/training_vectors/job_' + str(jobId) + '/'
     legacy = line[6]
     recBucketName = config['s3_legacy_bucket_name'] if legacy else config['s3_bucket_name']
     recAnalized = Recanalizer(line[0], pattern[0], pattern[2], pattern[3], workingFolder,
@@ -84,17 +93,18 @@ def recnilize(line,workingFolder,jobId,pattern,log=None,ssim=True,searchMatch=Fa
                               rec_id=recId, job_id=jobId,
                               legacy=legacy)
     if recAnalized.status == 'Processed':
-        recName = line[0].split('/')
-        recName = recName[len(recName)-1]
-        vectorUri = bucketBase+recName
+        if isRetrain is False:
+            recName = line[0].split('/')
+            recName = recName[len(recName)-1]
+            vectorUri = bucketBase+recName
+            vector = recAnalized.getVector()
+            vectorFile = workingFolder+recName
+            myfileWrite = open(vectorFile, 'w')
+            wr = csv.writer(myfileWrite)
+            wr.writerow(vector)
+            myfileWrite.close()
+            upload_file(vectorFile, vectorUri)
         fets = recAnalized.features()
-        vector = recAnalized.getVector()
-        vectorFile = workingFolder+recName
-        myfileWrite = open(vectorFile, 'w')
-        wr = csv.writer(myfileWrite)
-        wr.writerow(vector)
-        myfileWrite.close()
-        upload_file(vectorFile, vectorUri)
         info = []
         info.append(line[4])
         info.append(line[3])

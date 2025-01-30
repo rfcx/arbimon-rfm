@@ -2,6 +2,7 @@ from pylab import *
 from matplotlib import *
 import numpy
 import math
+from scipy.signal import spectrogram
 
 from .constants import FREQUENCIES_44100
 from .rec import Rec
@@ -83,24 +84,40 @@ class Roizer:
             nfft = i
             targetrows = len(FREQUENCIES_44100)
         data = self.original[initSample:endSample]
-        Pxx, freqs, bins = mlab.specgram(data, NFFT=nfft*2, Fs=self.sample_rate, noverlap=nfft)
+        f, t, Sxx = spectrogram(
+                data,
+                fs=self.sample_rate,
+                nperseg=nfft*2,
+                noverlap=nfft,
+                window='hann',
+                scaling='spectrum',
+                mode='magnitude',
+            )
+
+        # Ensure compatibility with 44100 Hz sample rate
         if self.sample_rate < 44100:
             self.sample_rate = 44100
-        dims =  Pxx.shape
-        i =0
-        while freqs[i] < self.lowF:
-            Pxx[i,:] = 0 
-            i = i + 1
-        #calculate decibeles in the passband
-        while freqs[i] < self.highF:
-            Pxx[i,:] =  10. * numpy.log10(Pxx[i,:].clip(min=0.0000000001))
-            i = i + 1
-        #put zeros in unwanted frequencies (filter)
-        while i <  dims[0]:
-            Pxx[i,:] = 0
-            i = i + 1
-        Z = numpy.flipud(Pxx[1:(Pxx.shape[0]-1),:])
-        z = numpy.zeros(shape=(targetrows,Pxx.shape[1]))
-        z[(targetrows-Pxx.shape[0]+1):(targetrows-1),:] = Z
+
+        # Filter frequencies below lowF and above highF
+        i = 0
+        while f[i] < self.lowF:
+            Sxx[i, :] = 0
+            i += 1
+
+        # Convert power to decibels in the passband
+        while f[i] < self.highF:
+            Sxx[i, :] = 10.0 * numpy.log10(Sxx[i, :].clip(min=1e-10)) + 38.0
+            i += 1
+
+        # Filter out frequencies above the desired range
+        while i < Sxx.shape[0]:
+            Sxx[i, :] = 0
+            i += 1
+
+        # Flip and pad spectrogram to match desired target rows
+        Z = numpy.flipud(Sxx[1:(Sxx.shape[0] - 1), :])
+        z = numpy.zeros(shape=(targetrows, Sxx.shape[1]))
+        z[(targetrows - Sxx.shape[0] + 1):(targetrows - 1), :] = Z
+
         self.spec = z
         
