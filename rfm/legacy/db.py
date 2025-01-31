@@ -126,6 +126,13 @@ def update_validations(db, project_id, user_id, model_name, validations_key, job
 
     return validation_set_id
 
+def set_progress_steps(db, job_id, progress_steps):
+     with closing(db.cursor()) as cursor:
+        cursor.execute("""
+        UPDATE `jobs` SET `progress_steps` = %s, progress=0, state="processing"
+        WHERE `job_id` = %s""", [progress_steps, job_id])
+        db.commit()
+
 
 def update_job_error(db, job_id, msg):
     with closing(db.cursor()) as cursor:

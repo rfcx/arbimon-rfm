@@ -10,13 +10,14 @@ import tempfile
 from contextlib import closing
 from joblib import Parallel, delayed
 from pylab import *
+import time
 
 from .a2audio.model import Model
 from .a2audio.roiset import Roiset
 from .a2audio.training import recnilize, roigen
 from .a2pyutils.logger import Logger
-from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations, get_retraining_job
-from .storage import upload_file, download_file
+from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations, get_retraining_job, set_progress_steps
+from .storage import upload_file, download_file, rename_file
 
 num_cores = multiprocessing.cpu_count()
 
@@ -86,8 +87,8 @@ def retrain(job_id: int):
     
     # get trained job
     try:
-        (trained_job_id) = get_retraining_job(db, job_id)
-    except Exception:
+        trained_job_id, = get_retraining_job(db, job_id)
+    except Exception as e:
         log.write("could not find retraining job #{}".format(job_id))
         sys.exit(-1)
     
@@ -95,7 +96,7 @@ def retrain(job_id: int):
     try:
         (project_id, user_id, model_type_id, training_set_id, model_name) = get_training_job(db, trained_job_id)
     except Exception:
-        log.write("could not find trained job #{}".format(job_id))
+        log.write("could not find trained job #{}".format(trained_job_id))
         sys.exit(-1)
     log.write("project_id={} training_set_id={} model_name={}".format(project_id, training_set_id, model_name))
     if model_type_id != 4:
@@ -114,6 +115,24 @@ def retrain(job_id: int):
     except Exception:
         exit_error(db, log, job_id, 'cannot create training csvs files or access training data from db. {}'.format(traceback.format_exc()))
     progress_steps = len(training_data)
+    
+    """Download trained data from csv"""
+    try:
+        trainedKey = 'project_'+str(project_id)+'/validations/job_'+str(trained_job_id)+'_vals.csv'
+        trained_local_path = working_folder + f'/trained_data.csv'
+        download_file(trainedKey, trained_local_path)
+    except Exception:
+        exit_error_no_db(log, job_id, 'cannot download trained data from s3 or read trained data csv')
+    
+    """Get trained data from csv"""
+    try:
+        trained_data = read_trained_data_csv(trained_local_path)
+        progress_steps = progress_steps + len(trained_data)
+    except Exception:
+        exit_error_no_db(log, job_id, 'cannot download trained data from s3 or read trained data csv')
+        
+    """Set progress steps to retrain job"""
+    set_progress_steps(db, job_id, progress_steps)
     
     """Roigenerator"""
     try:
@@ -177,21 +196,6 @@ def retrain(job_id: int):
     if len(pattern_surfaces) == 0:
         exit_error(db, log, job_id, 'cannot create pattern surface from rois')
     log.write('rois aligned, pattern surface created')
-    
-    """Download trained data from csv"""
-    try:
-        trainedKey = 'project_'+str(project_id)+'/validations/job_'+str(trained_job_id)+'_vals.csv'
-        trained_local_path = working_folder + f'/trained_data.csv'
-        download_file(trainedKey, trained_local_path)
-    except Exception:
-        exit_error_no_db(log, job_id, 'cannot download trained data from s3 or read trained data csv')
-    
-    """Get trained data from csv"""
-    try:
-        trained_data = read_trained_data_csv(trained_local_path)
-        print(str(trained_data))
-    except Exception:
-        exit_error_no_db(log, job_id, 'cannot download trained data from s3 or read trained data csv')
 
     """ Create and save model """
     savedModel = False
@@ -255,9 +259,16 @@ def retrain(job_id: int):
         try:
             #save model file to bucket
             modKey = 'project_'+str(project_id)+'/models/job_'+str(trained_job_id)+'_'+str(i)+'.mod'
+            timestamp = int(time.time())
+            oldModKey = 'project_'+str(project_id)+'/models/job_'+str(trained_job_id)+'_'+str(i)+'_'+str(timestamp)+'.mod'
+            rename_file(modKey, oldModKey)
             upload_file(modFile, modKey)
+            
             #save vocalization surface png to bucket
+            oldPngKey = 'project_'+str(project_id)+'/models/job_'+str(trained_job_id)+'_'+str(i)+'_'+str(timestamp)+'.png'
+            rename_file(pngKey, oldPngKey)
             upload_file(pngFilename, pngKey)
+            savedModel  = True
         except Exception:
             exit_error(db, log, job_id, 'error uploading files to bucket. {}'.format(traceback.format_exc()))
 
