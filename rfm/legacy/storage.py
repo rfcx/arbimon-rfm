@@ -14,7 +14,7 @@ def upload_file(local_path, key):
                         aws_secret_access_key=config['s3_secret_access_key'], endpoint_url=config['s3_endpoint'])
     bucket = s3.Bucket(config['s3_legacy_bucket_name'])
     bucket.upload_file(local_path, key)
-    bucket.Object(key).Acl().put(ACL='public-read')
+    s3.put_object_acl(Bucket=config['s3_legacy_bucket_name'], Key=key, ACL='public-read')
 
 def download_file(key, local_path):
     s3 = boto3.resource('s3', aws_access_key_id=config['s3_access_key_id'], 
@@ -27,5 +27,5 @@ def rename_file(key, new_key):
                         aws_secret_access_key=config['s3_secret_access_key'], endpoint_url=config['s3_endpoint'])
     bucket = s3.Bucket(config['s3_legacy_bucket_name'])
     bucket.Object(new_key).copy_from(CopySource={'Bucket': config['s3_legacy_bucket_name'], 'Key': key})
-    bucket.Object(new_key).Acl().put(ACL='public-read')
+    s3.put_object_acl(Bucket=config['s3_legacy_bucket_name'], Key=new_key, ACL='public-read')
     bucket.Object(key).delete()
