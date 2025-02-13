@@ -59,7 +59,8 @@ def run_train(job_id: int):
     try:
         (project_id, user_id, model_type_id, training_set_id, model_name) = get_training_job(db, job_id)
         (use_training_p, use_training_np, use_validation_p, use_validation_np) = get_training_job_params(db, job_id)
-    except Exception:
+    except Exception as e:
+        print(e)
         log.write("could not find training job #{}".format(job_id))
         sys.exit(-1)
     log.write("project_id={} training_set_id={} model_name={}".format(project_id, training_set_id, model_name))

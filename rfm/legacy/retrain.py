@@ -89,6 +89,7 @@ def retrain(job_id: int):
     try:
         trained_job_id, = get_retraining_job(db, job_id)
     except Exception as e:
+        print(e)
         log.write("could not find retraining job #{}".format(job_id))
         sys.exit(-1)
     
