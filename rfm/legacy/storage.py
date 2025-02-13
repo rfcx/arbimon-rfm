@@ -13,7 +13,7 @@ def upload_file(local_path, key):
     s3 = boto3.resource('s3', aws_access_key_id=config['s3_access_key_id'], 
                         aws_secret_access_key=config['s3_secret_access_key'], endpoint_url=config['s3_endpoint'])
     bucket = s3.Bucket(config['s3_legacy_bucket_name'])
-    bucket.upload_file(local_path, key)
+    bucket.upload_file(local_path, key, ExtraArgs={'ACL': 'public-read'})
 
 def download_file(key, local_path):
     s3 = boto3.resource('s3', aws_access_key_id=config['s3_access_key_id'], 
@@ -25,5 +25,4 @@ def rename_file(key, new_key):
     s3 = boto3.resource('s3', aws_access_key_id=config['s3_access_key_id'], 
                         aws_secret_access_key=config['s3_secret_access_key'], endpoint_url=config['s3_endpoint'])
     bucket = s3.Bucket(config['s3_legacy_bucket_name'])
-    bucket.Object(new_key).copy_from(CopySource={'Bucket': config['s3_legacy_bucket_name'], 'Key': key})
-    bucket.Object(key).delete()
+    bucket.Object(new_key).copy_from(CopySource={'Bucket': config['s3_legacy_bucket_name'], 'Key': key}, ACL='public-read')
