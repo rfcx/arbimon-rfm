@@ -279,7 +279,6 @@ def retrain(job_id: int):
         exit_error(db, log, job_id, 'error saving model')
 
     update_job_last_update(db, job_id)
-    update_job_last_update(db, trained_job_id)
 
     remove_working_folder(job_id)
     db.close()
