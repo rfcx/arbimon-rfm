@@ -62,6 +62,7 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
     if classificationCanceled:
         return None
     error_processing = False
+    log.write('running classification...')
     db = connect()
     if cancel_status(db,job_id,working_folder,False):
         classificationCanceled = True
@@ -73,6 +74,7 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
         if len(model_data) > 5:
             use_ssim = model_data[5]
         bucket_name = storage_config['s3_legacy_bucket_name'] if rec['legacy'] else storage_config['s3_bucket_name']
+        log.write('recAnalized {}'.format('starting download and analize'))
         rec_analized = Recanalizer(rec['uri'],
                                   model_data[1],
                                   float(model_data[2]),
