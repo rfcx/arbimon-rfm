@@ -100,7 +100,7 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
     log.write('finish')
     featvector = None
     fets = None
-    if rec_analized.status == 'Processed':
+    if rec_analized is not None and rec_analized.status == 'Processed':
         try:
             featvector = rec_analized.getVector()
             fets = rec_analized.features()
