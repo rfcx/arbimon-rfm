@@ -1,4 +1,7 @@
 FROM python:3.8-buster AS arbimon-rfm
+RUN set -eux; \
+    sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g; s|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g; s|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "5";\n' > /etc/apt/apt.conf.d/99archive
 
 # Install sox and libsndfile
 RUN apt-get update && \

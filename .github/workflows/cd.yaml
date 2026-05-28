@@ -57,6 +57,16 @@ jobs:
     secrets:
       kube-config: ${{ secrets.KUBE_CONFIG_SUPER }}
 
+  deploy-rfcx-local:
+    name: 'Deploy (rfcx-local)'
+    needs: [prepare, configure]
+    if: ${{ needs.configure.outputs.namespace == 'production' }}
+    uses: rfcx/cicd/.github/workflows/rfcx-local-worker-cd.yaml@master
+    with:
+      dockerfile: build/Dockerfile
+      image: arbimon-rfm
+      repo: arbimon-rfm
+
   notify:
     name: 'Notify'
     if: ${{ always() }}
