@@ -22,7 +22,8 @@ num_cores = multiprocessing.cpu_count()
 
 def exit_error(db, log, job_id, msg):
     log.write(msg)
-    update_job_error(db, msg, job_id)
+    # NOTE: db.update_job_error signature is (db, job_id, msg); pass in order.
+    update_job_error(db, job_id, msg)
     remove_working_folder(job_id)
     sys.exit(-1)
 
