@@ -23,7 +23,8 @@ num_cores = multiprocessing.cpu_count()
 
 def exit_error(db, log, job_id, msg):
     log.write(msg)
-    update_job_error(db, msg, job_id)
+    # NOTE: db.update_job_error signature is (db, job_id, msg); pass in order.
+    update_job_error(db, job_id, msg)
     remove_working_folder(job_id)
     sys.exit(-1)
 
@@ -277,6 +278,21 @@ def retrain(job_id: int):
         log.write("model saved")
     else:
         exit_error(db, log, job_id, 'error saving model')
+
+    # Finalize the job. Unlike train.py, the upstream retrain.py never marked
+    # the job completed (it only ever set state='processing' via
+    # set_progress_steps), so a successful retrain looked like a hung zombie
+    # forever. Mirror train.py's completion update so the dispatcher/UI see it
+    # as completed. (rfcx-local fix 2026-06-09, Session A.)
+    try:
+        with closing(db.cursor()) as cursor:
+            cursor.execute(
+                'update `jobs` set `state`="completed", `progress`=`progress_steps`, '
+                '`completed`=1, `last_update`=now() where `job_id`=%s', [job_id])
+            db.commit()
+        log.write('job marked completed')
+    except Exception:
+        exit_error(db, log, job_id, 'error finalizing retrain job. {}'.format(traceback.format_exc()))
 
     update_job_last_update(db, job_id)
 
