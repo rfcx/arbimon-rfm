@@ -222,19 +222,75 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
         print('ERROR writing {}'.format(traceback.format_exc()))
         insert_rec_error(db, rec_id, job_id)
 
+# Phase-2 batching knob. Kept small + env-overridable so behaviour can be
+# tuned without a rebuild. Defaults preserve exact semantics but amortize the
+# per-record commit/UPDATE/INSERT overhead across N records.
+RESULT_BATCH_SIZE = max(1, int(os.getenv('CLASSIFY_RESULT_BATCH_SIZE', '100')))
+
+def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
+    """Commit one batch: bump progress by the number of records seen since the
+    last flush, and bulk-insert the accumulated classification_results rows.
+
+    On a bulk-insert failure we fall back to per-row inserts so a single bad
+    row does not lose the whole batch and still gets a recordings_errors
+    entry, mirroring the original per-record path. Returns ([], 0) so callers
+    can reset the accumulators in one assignment.
+    """
+    if pending_progress <= 0 and not pending_rows:
+        return [], 0
+    try:
+        with contextlib.closing(db.cursor()) as cursor:
+            if pending_progress > 0:
+                cursor.execute("""
+                    UPDATE `jobs`
+                    SET `progress` = `progress` + %s, last_update = NOW()
+                    WHERE `job_id` = %s
+                """, [pending_progress, job_id])
+            if pending_rows:
+                cursor.executemany("""
+                    INSERT INTO `classification_results` (
+                        job_id, recording_id, species_id, songtype_id, present,
+                        max_vector_value
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                """, pending_rows)
+        db.commit()
+    except Exception:
+        # Bulk path failed: recover progress + salvage rows individually so a
+        # single offending record cannot drop the batch's results/progress.
+        log.write('batch flush failed, falling back to per-row inserts: {}'.format(traceback.format_exc()))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        if pending_progress > 0:
+            try:
+                with contextlib.closing(db.cursor()) as cursor:
+                    cursor.execute("""
+                        UPDATE `jobs`
+                        SET `progress` = `progress` + %s, last_update = NOW()
+                        WHERE `job_id` = %s
+                    """, [pending_progress, job_id])
+                db.commit()
+            except Exception:
+                log.write('progress catch-up update failed: {}'.format(traceback.format_exc()))
+        for row in pending_rows:
+            # row = [job_id, rec_id, species, songtype, presence, max_v]
+            insert_result_to_db(db, row[0], row[1], row[2], row[3], row[4], row[5])
+    return [], 0
+
 def process_results(res, working_folder, model_uri, job_id, species, songtype, db, log):
     min_vector_val = 9999999.0
     max_vector_val = -9999999.0
     processed = 0
+    seen = 0
+    pending_rows = []
+    pending_progress = 0
     try:
         for r in res:
-            with contextlib.closing(db.cursor()) as cursor:
-                cursor.execute("""
-                    UPDATE `jobs`
-                    SET `progress` = `progress` + 1, last_update = NOW()
-                    WHERE `job_id` = %s
-                """, [job_id])
-                db.commit()
+            # Progress advances once per result (valid or error), matching the
+            # original per-record UPDATE `progress` = `progress` + 1 semantics.
+            pending_progress += 1
+            seen += 1
             if r and 'id' in r:
                 processed = processed + 1
                 rec_name = r['uri'].split('/')
@@ -251,17 +307,20 @@ def process_results(res, working_folder, model_uri, job_id, species, songtype, d
                             model_uri.replace('.mod', ''), job_id, rec_name
                     )
                     upload_vector(vector_uri,local_file,r['id'],db,job_id)
-                    log.write("inserting results from {rid} for {sp} {st} into the database ({r}, maxv:{maxv})".format(
-                        rid=r['id'],
-                        r=r['r'],
-                        sp=species,
-                        st=songtype,
-                        maxv=maxv
-                    ))
-                    insert_result_to_db(db, job_id,r['id'], species, songtype,r['r'],maxv)
+                    pending_rows.append([job_id, r['id'], species, songtype, r['r'], float(maxv)])
                 else:
                     log.write('localFile is None')
                     insert_rec_error(db, r['id'], job_id)
+            # Flush on batch boundary (progress counter drives the boundary so
+            # error-only stretches still advance progress promptly).
+            if pending_progress >= RESULT_BATCH_SIZE:
+                pending_rows, pending_progress = _flush_result_batch(
+                    db, job_id, pending_rows, pending_progress, log)
+                log.write('processed {seen} results ({ins} inserted so far) for {sp} {st}'.format(
+                    seen=seen, ins=processed, sp=species, st=songtype))
+        # Final flush: exact remainder so progress + results stay precise.
+        pending_rows, pending_progress = _flush_result_batch(
+            db, job_id, pending_rows, pending_progress, log)
     except Exception:
         exit_error(db, log, job_id, 'cannot process results. {}'.format(traceback.format_exc()))
     return {"t":processed,"stats":{"minv": float(min_vector_val), "maxv": float(max_vector_val)}}
