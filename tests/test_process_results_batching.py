@@ -86,11 +86,17 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.db.executes.append((sql, params))
+        self.rows = []
+        if 'FROM `classification_results`' in sql and 'SELECT `recording_id`' in sql:
+            self.rows = [(rid,) for rid in self.db.existing_result_ids]
         if 'UPDATE `jobs`' in sql and 'progress' in sql:
             # params[0] is the increment; stays pending until commit (a
             # rollback discards it), mirroring real transactional semantics
             # the batching fallback relies on.
             self.db.pending_progress += params[0]
+
+    def __iter__(self):
+        return iter(getattr(self, 'rows', []))
 
     def executemany(self, sql, seq):
         if self.db.fail_executemany:
@@ -102,8 +108,9 @@ class FakeCursor:
 
 
 class FakeDB:
-    def __init__(self, fail_executemany=False):
+    def __init__(self, fail_executemany=False, existing_result_ids=None):
         self.progress = 0
+        self.existing_result_ids = set(existing_result_ids or [])
         self.inserted_rows = []
         self.executes = []
         self.commits = 0
@@ -267,4 +274,29 @@ def test_vector_write_failure_skips_result_row(monkeypatch):
     assert db.progress == 1
     assert len(db.inserted_rows) == 0
     assert db_mod._rec_errors == [(1002, 88)]
+
+def test_existing_results_are_skipped_but_count_for_progress_and_stats(monkeypatch):
+    classify.RESULT_BATCH_SIZE = 10
+    classify.VECTOR_UPLOAD_WORKERS = 2
+    classify.VECTOR_UPLOAD_MAX_OUTSTANDING = 4
+    uploaded = []
+
+    def fake_upload(local_path, key):
+        uploaded.append(key)
+    monkeypatch.setattr(classify, 'upload_file', fake_upload)
+
+    # Recording 1001 already has a committed classification_results row from a
+    # previous phase-2 attempt. We still recompute/use its vector for stats and
+    # progress, but must not upload/insert it again.
+    db = FakeDB(existing_result_ids={1001})
+    results = [_mk_result(0), _mk_result(1), _mk_result(2)]
+    stats = classify.process_results(results, '/tmp', 'model.mod', 55, 7, 3, db, FakeLog())
+
+    assert stats['t'] == 3
+    assert db.progress == 3
+    inserted_ids = {row[1] for row in db.inserted_rows}
+    assert inserted_ids == {1000, 1002}
+    assert len(uploaded) == 2
+    assert stats['stats']['minv'] == pytest.approx(0.0)
+    assert stats['stats']['maxv'] == pytest.approx(0.4)
 

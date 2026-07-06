@@ -226,12 +226,35 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
 # Phase-2 knobs. Kept env-overridable so behaviour can be tuned without a
 # rebuild. Defaults preserve exact semantics but amortize DB work and overlap
 # vector writes/uploads, which dominate large playlist result-write phases.
-RESULT_BATCH_SIZE = max(1, int(os.getenv('CLASSIFY_RESULT_BATCH_SIZE', '100')))
+RESULT_BATCH_SIZE = max(1, int(os.getenv('CLASSIFY_RESULT_BATCH_SIZE', '250')))
 VECTOR_UPLOAD_WORKERS = max(1, int(os.getenv('CLASSIFY_VECTOR_UPLOAD_WORKERS', '6')))
 VECTOR_UPLOAD_MAX_OUTSTANDING = max(
     VECTOR_UPLOAD_WORKERS * 4,
     int(os.getenv('CLASSIFY_VECTOR_UPLOAD_MAX_OUTSTANDING', str(RESULT_BATCH_SIZE)))
 )
+
+def _existing_result_recording_ids(db, job_id, species, songtype, log):
+    """Return recordings that already have a classification_result for this job.
+
+    This makes phase 2 restart-safe after a pod/deadline failure: a re-run still
+    recomputes feature vectors (so final min/max stats remain deterministic),
+    but it skips duplicate vector uploads and classification_results inserts for
+    rows that were already committed before the failure.
+    """
+    try:
+        with contextlib.closing(db.cursor()) as cursor:
+            cursor.execute("""
+                SELECT `recording_id`
+                FROM `classification_results`
+                WHERE `job_id` = %s
+                  AND `species_id` = %s
+                  AND `songtype_id` = %s
+            """, [job_id, species, songtype])
+            return set(row[0] for row in cursor)
+    except Exception:
+        log.write('could not load existing classification_results for resume: {}'.format(traceback.format_exc()))
+        return set()
+
 
 def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
     """Commit one batch: bump progress by the number of records seen since the
@@ -367,12 +390,30 @@ def process_results(res, working_folder, model_uri, job_id, species, songtype, d
                     seen=seen, ins=processed, sp=species, st=songtype))
 
     try:
-        log.write('processing classification results with batch_size={b}, vector_upload_workers={w}'.format(
-            b=RESULT_BATCH_SIZE, w=VECTOR_UPLOAD_WORKERS))
+        existing_result_ids = _existing_result_recording_ids(db, job_id, species, songtype, log)
+        log.write('processing classification results with batch_size={b}, vector_upload_workers={w}, existing_results={e}'.format(
+            b=RESULT_BATCH_SIZE, w=VECTOR_UPLOAD_WORKERS, e=len(existing_result_ids)))
         with concurrent.futures.ThreadPoolExecutor(max_workers=VECTOR_UPLOAD_WORKERS) as executor:
             for r in res:
                 if r and 'id' in r:
                     processed += 1
+                    if r['id'] in existing_result_ids:
+                        # Recomputed vector still participates in final stats,
+                        # but committed row/vector output is not duplicated.
+                        maxv = max(r['f'])
+                        minv = min(r['f'])
+                        if min_vector_val > float(minv):
+                            min_vector_val = float(minv)
+                        if max_vector_val < float(maxv):
+                            max_vector_val = float(maxv)
+                        pending_progress += 1
+                        seen += 1
+                        if pending_progress >= RESULT_BATCH_SIZE:
+                            pending_rows, pending_progress = _flush_result_batch(
+                                db, job_id, pending_rows, pending_progress, log)
+                            log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
+                                seen=seen, ins=processed, sp=species, st=songtype))
+                        continue
                     futures.add(executor.submit(
                         _vector_result_row, r, working_folder, model_uri, job_id, species, songtype))
                     if len(futures) >= VECTOR_UPLOAD_MAX_OUTSTANDING:
