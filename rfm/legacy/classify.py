@@ -9,6 +9,7 @@ import pickle
 import csv
 import json
 import sys
+import concurrent.futures
 
 from .a2pyutils.logger import Logger
 from .a2audio.recanalizer import Recanalizer
@@ -222,10 +223,15 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
         print('ERROR writing {}'.format(traceback.format_exc()))
         insert_rec_error(db, rec_id, job_id)
 
-# Phase-2 batching knob. Kept small + env-overridable so behaviour can be
-# tuned without a rebuild. Defaults preserve exact semantics but amortize the
-# per-record commit/UPDATE/INSERT overhead across N records.
+# Phase-2 knobs. Kept env-overridable so behaviour can be tuned without a
+# rebuild. Defaults preserve exact semantics but amortize DB work and overlap
+# vector writes/uploads, which dominate large playlist result-write phases.
 RESULT_BATCH_SIZE = max(1, int(os.getenv('CLASSIFY_RESULT_BATCH_SIZE', '100')))
+VECTOR_UPLOAD_WORKERS = max(1, int(os.getenv('CLASSIFY_VECTOR_UPLOAD_WORKERS', '6')))
+VECTOR_UPLOAD_MAX_OUTSTANDING = max(
+    VECTOR_UPLOAD_WORKERS * 4,
+    int(os.getenv('CLASSIFY_VECTOR_UPLOAD_MAX_OUTSTANDING', str(RESULT_BATCH_SIZE)))
+)
 
 def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
     """Commit one batch: bump progress by the number of records seen since the
@@ -278,6 +284,62 @@ def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
             insert_result_to_db(db, row[0], row[1], row[2], row[3], row[4], row[5])
     return [], 0
 
+def _vector_result_row(r, working_folder, model_uri, job_id, species, songtype):
+    """Write and upload one vector file, returning the DB row to insert.
+
+    This function intentionally does not touch the DB so it is safe to run in a
+    bounded thread pool. The parent thread preserves the legacy DB semantics:
+    - vector write failure: record an error and skip classification_results row
+    - vector upload failure: record an error but still insert the result row
+      (matching the old upload_vector() path, which swallowed upload errors)
+    """
+    rec_name = r['uri'].split('/')[-1]
+    local_file = write_vector(r['uri'], working_folder, r['f'])
+    if local_file is None:
+        return {
+            'row': None,
+            'error_rec_id': r['id'],
+            'error': 'localFile is None',
+            'minv': None,
+            'maxv': None,
+        }
+
+    maxv = max(r['f'])
+    minv = min(r['f'])
+    vector_uri = '{}/classification_{}_{}.vector'.format(
+        model_uri.replace('.mod', ''), job_id, rec_name
+    )
+    upload_error = None
+    try:
+        upload_file(local_file, vector_uri)
+        os.remove(local_file)
+    except Exception:
+        upload_error = traceback.format_exc()
+        try:
+            if os.path.exists(local_file):
+                os.remove(local_file)
+        except Exception:
+            pass
+    return {
+        'row': [job_id, r['id'], species, songtype, r['r'], float(maxv)],
+        'error_rec_id': r['id'] if upload_error else None,
+        'error': upload_error,
+        'minv': float(minv),
+        'maxv': float(maxv),
+    }
+
+
+def _handle_vector_result(item, db, job_id, pending_rows, log):
+    if item.get('error_rec_id') is not None:
+        if item.get('error'):
+            log.write('vector upload/write error for rec {rid}: {err}'.format(
+                rid=item['error_rec_id'], err=item['error']))
+        insert_rec_error(db, item['error_rec_id'], job_id)
+    if item.get('row') is not None:
+        pending_rows.append(item['row'])
+    return pending_rows
+
+
 def process_results(res, working_folder, model_uri, job_id, species, songtype, db, log):
     min_vector_val = 9999999.0
     max_vector_val = -9999999.0
@@ -285,39 +347,52 @@ def process_results(res, working_folder, model_uri, job_id, species, songtype, d
     seen = 0
     pending_rows = []
     pending_progress = 0
-    try:
-        for r in res:
-            # Progress advances once per result (valid or error), matching the
-            # original per-record UPDATE `progress` = `progress` + 1 semantics.
+    futures = set()
+
+    def consume_done(done):
+        nonlocal min_vector_val, max_vector_val, pending_rows, pending_progress, seen
+        for fut in done:
+            item = fut.result()
             pending_progress += 1
             seen += 1
-            if r and 'id' in r:
-                processed = processed + 1
-                rec_name = r['uri'].split('/')
-                rec_name = rec_name[len(rec_name)-1]
-                local_file = write_vector(r['uri'],working_folder,r['f'])
-                if local_file is not None:
-                    maxv = max(r['f'])
-                    minv = min(r['f'])
-                    if min_vector_val > float(minv):
-                        min_vector_val = minv
-                    if max_vector_val < float(maxv):
-                        max_vector_val = maxv
-                    vector_uri = '{}/classification_{}_{}.vector'.format(
-                            model_uri.replace('.mod', ''), job_id, rec_name
-                    )
-                    upload_vector(vector_uri,local_file,r['id'],db,job_id)
-                    pending_rows.append([job_id, r['id'], species, songtype, r['r'], float(maxv)])
-                else:
-                    log.write('localFile is None')
-                    insert_rec_error(db, r['id'], job_id)
-            # Flush on batch boundary (progress counter drives the boundary so
-            # error-only stretches still advance progress promptly).
+            if item.get('minv') is not None and min_vector_val > item['minv']:
+                min_vector_val = item['minv']
+            if item.get('maxv') is not None and max_vector_val < item['maxv']:
+                max_vector_val = item['maxv']
+            pending_rows = _handle_vector_result(item, db, job_id, pending_rows, log)
             if pending_progress >= RESULT_BATCH_SIZE:
                 pending_rows, pending_progress = _flush_result_batch(
                     db, job_id, pending_rows, pending_progress, log)
-                log.write('processed {seen} results ({ins} inserted so far) for {sp} {st}'.format(
+                log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
                     seen=seen, ins=processed, sp=species, st=songtype))
+
+    try:
+        log.write('processing classification results with batch_size={b}, vector_upload_workers={w}'.format(
+            b=RESULT_BATCH_SIZE, w=VECTOR_UPLOAD_WORKERS))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=VECTOR_UPLOAD_WORKERS) as executor:
+            for r in res:
+                if r and 'id' in r:
+                    processed += 1
+                    futures.add(executor.submit(
+                        _vector_result_row, r, working_folder, model_uri, job_id, species, songtype))
+                    if len(futures) >= VECTOR_UPLOAD_MAX_OUTSTANDING:
+                        done, futures = concurrent.futures.wait(
+                            futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                        consume_done(done)
+                else:
+                    # Progress advances once per result (valid or error),
+                    # matching the original per-record phase-2 semantics.
+                    pending_progress += 1
+                    seen += 1
+                    if pending_progress >= RESULT_BATCH_SIZE:
+                        pending_rows, pending_progress = _flush_result_batch(
+                            db, job_id, pending_rows, pending_progress, log)
+                        log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
+                            seen=seen, ins=processed, sp=species, st=songtype))
+            while futures:
+                done, futures = concurrent.futures.wait(
+                    futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                consume_done(done)
         # Final flush: exact remainder so progress + results stay precise.
         pending_rows, pending_progress = _flush_result_batch(
             db, job_id, pending_rows, pending_progress, log)

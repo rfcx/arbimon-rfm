@@ -171,8 +171,10 @@ def test_bulk_insert_and_progress_exact():
     assert db.progress == n
     # Bulk path used: far fewer commits than records (batches of 10 -> 3 flushes).
     assert db.commits == 3
-    # Inserted row shape matches the schema tuple order.
-    assert db.inserted_rows[0] == [42, 1000, 7, 3, 1, pytest.approx(0.05)]
+    # Inserted row shape matches the schema tuple order; parallel vector uploads
+    # do not guarantee row order.
+    rows_by_rec = {row[1]: row for row in db.inserted_rows}
+    assert rows_by_rec[1000] == [42, 1000, 7, 3, 1, pytest.approx(0.05)]
 
 
 def test_progress_counts_errored_records_too():
@@ -224,3 +226,45 @@ def test_bulk_failure_falls_back_per_row():
     insert_execs = [e for e in db.executes if 'INSERT INTO `classification_results`' in e[0]]
     assert len(insert_execs) == 5
     assert db.rollbacks >= 1
+
+def test_vector_upload_failure_preserves_result_row(monkeypatch):
+    classify.RESULT_BATCH_SIZE = 10
+    classify.VECTOR_UPLOAD_WORKERS = 2
+    classify.VECTOR_UPLOAD_MAX_OUTSTANDING = 4
+    db_mod = sys.modules['rfm.legacy.db']
+    db_mod._rec_errors.clear()
+
+    def fail_upload(local_path, key):
+        raise RuntimeError('simulated upload failure')
+    monkeypatch.setattr(classify, 'upload_file', fail_upload)
+
+    db = FakeDB()
+    stats = classify.process_results([_mk_result(1)], '/tmp', 'model.mod', 77, 7, 3, db, FakeLog())
+
+    # Legacy upload_vector swallowed upload errors, inserted a recordings_errors
+    # row, and classification_results insertion still happened afterward.
+    assert stats['t'] == 1
+    assert db.progress == 1
+    assert len(db.inserted_rows) == 1
+    assert db_mod._rec_errors == [(1001, 77)]
+
+
+def test_vector_write_failure_skips_result_row(monkeypatch):
+    classify.RESULT_BATCH_SIZE = 10
+    classify.VECTOR_UPLOAD_WORKERS = 2
+    classify.VECTOR_UPLOAD_MAX_OUTSTANDING = 4
+    db_mod = sys.modules['rfm.legacy.db']
+    db_mod._rec_errors.clear()
+
+    monkeypatch.setattr(classify, 'write_vector', lambda uri, folder, featvector: None)
+
+    db = FakeDB()
+    stats = classify.process_results([_mk_result(2)], '/tmp', 'model.mod', 88, 7, 3, db, FakeLog())
+
+    # This matches the old localFile is None branch: progress advances and a
+    # recording error is recorded, but no classification_results row is written.
+    assert stats['t'] == 1
+    assert db.progress == 1
+    assert len(db.inserted_rows) == 0
+    assert db_mod._rec_errors == [(1002, 88)]
+
