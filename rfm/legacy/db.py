@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import mysql.connector
 import traceback
 from contextlib import closing
@@ -12,14 +13,87 @@ config = {
     'db_name': os.getenv('DB_NAME'),
 }
 
-def connect():
+# Resilience knobs (env-overridable so behaviour can be tuned without a
+# rebuild). Analysis workers open a DB connection up front and only use it
+# after a slow (often multi-second, load-dependent) S3 download; under storage
+# strain that idle connection can be reaped by MaxScale / wait_timeout, and the
+# server itself can transiently refuse connections. Retrying the *connect* and
+# transparently reconnecting a *dropped* connection turns those load-induced
+# blips into a slightly slower run instead of a lost job.
+DB_CONNECT_RETRIES = max(1, int(os.getenv('DB_CONNECT_RETRIES', '5')))
+DB_CONNECT_BACKOFF = float(os.getenv('DB_CONNECT_BACKOFF', '1.5'))
+DB_CONNECT_BACKOFF_MAX = float(os.getenv('DB_CONNECT_BACKOFF_MAX', '30'))
+
+
+def _new_connection():
     return mysql.connector.connect(
         host=config['db_host'],
         port=config['db_port'],
         user=config['db_user'],
-        password=config['db_password'], 
+        password=config['db_password'],
         database=config['db_name']
     )
+
+
+def connect(log=None):
+    """Open a DB connection, retrying transient failures with backoff.
+
+    A cold cluster / strained DB can refuse or slow-drop new connections; a
+    single attempt made analysis jobs fail purely due to load. We retry a
+    bounded number of times with exponential backoff before giving up.
+    """
+    last_exc = None
+    delay = DB_CONNECT_BACKOFF
+    for attempt in range(1, DB_CONNECT_RETRIES + 1):
+        try:
+            return _new_connection()
+        except mysql.connector.Error as exc:
+            last_exc = exc
+            if attempt >= DB_CONNECT_RETRIES:
+                break
+            if log is not None:
+                try:
+                    log.write('db connect attempt {}/{} failed ({}); retrying in {:.1f}s'.format(
+                        attempt, DB_CONNECT_RETRIES, exc, delay))
+                except Exception:
+                    pass
+            time.sleep(delay)
+            delay = min(delay * 2, DB_CONNECT_BACKOFF_MAX)
+    raise last_exc
+
+
+def ensure_connection(db, log=None):
+    """Return a live connection, reconnecting transparently if the current one
+    has been dropped (idle-reaped during a slow download, failover, etc.).
+
+    Prefers mysql.connector's own reconnect (preserves the handle so callers
+    keep using the same object); falls back to a fresh connection if that fails.
+    Returns the usable connection (possibly a new object).
+    """
+    try:
+        if db is not None and db.is_connected():
+            return db
+    except Exception:
+        pass
+    # Try to revive the existing handle first (keeps the object identity).
+    try:
+        if db is not None:
+            db.reconnect(attempts=DB_CONNECT_RETRIES, delay=int(DB_CONNECT_BACKOFF))
+            if db.is_connected():
+                if log is not None:
+                    try:
+                        log.write('db connection reconnected')
+                    except Exception:
+                        pass
+                return db
+    except Exception as exc:
+        if log is not None:
+            try:
+                log.write('db reconnect failed ({}); opening a fresh connection'.format(exc))
+            except Exception:
+                pass
+    # Last resort: a brand-new connection (with connect() retry/backoff).
+    return connect(log=log)
 
 def get_training_job(db, job_id):
     with closing(db.cursor()) as cursor:

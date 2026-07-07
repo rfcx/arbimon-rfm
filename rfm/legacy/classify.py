@@ -9,10 +9,11 @@ import pickle
 import csv
 import json
 import sys
+import concurrent.futures
 
 from .a2pyutils.logger import Logger
 from .a2audio.recanalizer import Recanalizer
-from .db import connect, get_classification_job_data, get_model_params, get_playlist, insert_rec_error, set_progress_params, update_job_error
+from .db import connect, ensure_connection, get_classification_job_data, get_model_params, get_playlist, insert_rec_error, set_progress_params, update_job_error
 from .storage import upload_file, download_file, config as storage_config
 
 FORCE_SEQUENTIAL_EXECUTION = os.getenv('FORCE_SEQUENTIAL_EXECUTION') == '1'
@@ -64,7 +65,7 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
         return None
     error_processing = False
     log.write('running classification...')
-    db = connect()
+    db = connect(log)
     if cancel_status(db,job_id,working_folder,False):
         classificationCanceled = True
         quit()
@@ -88,16 +89,30 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
                                   modelSampleRate=model_specs['sample_rate'],
                                   legacy=rec['legacy'])
         log.write('recAnalized {}'.format(rec_analized.status))
-        with contextlib.closing(db.cursor()) as cursor:
-            cursor.execute("""
-                UPDATE `jobs`
-                SET `progress` = `progress` + 1, last_update = NOW()
-                WHERE `job_id` = %s
-            """, [job_id])
-            db.commit()
     except Exception:
         error_processing = True
         log.write('error rec analyzed {} '.format(traceback.format_exc()))
+
+    # Best-effort progress bump on successful analysis, isolated from the DB
+    # connection state. The connection was opened before the (slow, load-
+    # dependent) download above and may have been idle-reaped in the meantime;
+    # reconnect transparently and retry once. A failed progress write must NOT
+    # mark the recording as errored (the analysis itself succeeded) and must
+    # NOT abort the job -- at worst the phase-1 progress counter lags by one,
+    # which the phase-2 flush corrects. Only bump on success, matching the
+    # original semantics (errored recs get their progress in phase 2).
+    if not error_processing:
+        try:
+            db = ensure_connection(db, log)
+            with contextlib.closing(db.cursor()) as cursor:
+                cursor.execute("""
+                    UPDATE `jobs`
+                    SET `progress` = `progress` + 1, last_update = NOW()
+                    WHERE `job_id` = %s
+                """, [job_id])
+                db.commit()
+        except Exception:
+            log.write('progress update failed (non-fatal, reconnecting next rec): {}'.format(traceback.format_exc()))
     log.write('finish')
     featvector = None
     fets = None
@@ -122,11 +137,20 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
     else:
         error_processing = True
     if error_processing:
+        # Per-record isolation: a single recording's failure (including a DB
+        # blip while recording the error) must NEVER sys.exit() and take the
+        # whole parallel job down with it. Record the error best-effort --
+        # reconnecting if the connection was dropped -- then skip just this rec.
         try:
-            insert_rec_error(db,rec['recording_id'],job_id)
+            db = ensure_connection(db, log)
+            insert_rec_error(db, rec['recording_id'], job_id)
         except Exception:
-            exit_error(db, log, job_id, "Could not insert recording error, {}".format(traceback.format_exc()))
-        db.close()
+            log.write('could not insert recording error for rec {} (non-fatal, skipping rec): {}'.format(
+                rec['recording_id'], traceback.format_exc()))
+        try:
+            db.close()
+        except Exception:
+            pass
         return None
     else:
         log.write('done processing this rec')
@@ -222,46 +246,220 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
         print('ERROR writing {}'.format(traceback.format_exc()))
         insert_rec_error(db, rec_id, job_id)
 
+# Phase-2 knobs. Kept env-overridable so behaviour can be tuned without a
+# rebuild. Defaults preserve exact semantics but amortize DB work and overlap
+# vector writes/uploads, which dominate large playlist result-write phases.
+RESULT_BATCH_SIZE = max(1, int(os.getenv('CLASSIFY_RESULT_BATCH_SIZE', '250')))
+VECTOR_UPLOAD_WORKERS = max(1, int(os.getenv('CLASSIFY_VECTOR_UPLOAD_WORKERS', '6')))
+VECTOR_UPLOAD_MAX_OUTSTANDING = max(
+    VECTOR_UPLOAD_WORKERS * 4,
+    int(os.getenv('CLASSIFY_VECTOR_UPLOAD_MAX_OUTSTANDING', str(RESULT_BATCH_SIZE)))
+)
+
+def _existing_result_recording_ids(db, job_id, species, songtype, log):
+    """Return recordings that already have a classification_result for this job.
+
+    This makes phase 2 restart-safe after a pod/deadline failure: a re-run still
+    recomputes feature vectors (so final min/max stats remain deterministic),
+    but it skips duplicate vector uploads and classification_results inserts for
+    rows that were already committed before the failure.
+    """
+    try:
+        with contextlib.closing(db.cursor()) as cursor:
+            cursor.execute("""
+                SELECT `recording_id`
+                FROM `classification_results`
+                WHERE `job_id` = %s
+                  AND `species_id` = %s
+                  AND `songtype_id` = %s
+            """, [job_id, species, songtype])
+            return set(row[0] for row in cursor)
+    except Exception:
+        log.write('could not load existing classification_results for resume: {}'.format(traceback.format_exc()))
+        return set()
+
+
+def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
+    """Commit one batch: bump progress by the number of records seen since the
+    last flush, and bulk-insert the accumulated classification_results rows.
+
+    On a bulk-insert failure we fall back to per-row inserts so a single bad
+    row does not lose the whole batch and still gets a recordings_errors
+    entry, mirroring the original per-record path. Returns ([], 0) so callers
+    can reset the accumulators in one assignment.
+    """
+    if pending_progress <= 0 and not pending_rows:
+        return [], 0
+    try:
+        with contextlib.closing(db.cursor()) as cursor:
+            if pending_progress > 0:
+                cursor.execute("""
+                    UPDATE `jobs`
+                    SET `progress` = `progress` + %s, last_update = NOW()
+                    WHERE `job_id` = %s
+                """, [pending_progress, job_id])
+            if pending_rows:
+                cursor.executemany("""
+                    INSERT INTO `classification_results` (
+                        job_id, recording_id, species_id, songtype_id, present,
+                        max_vector_value
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                """, pending_rows)
+        db.commit()
+    except Exception:
+        # Bulk path failed: recover progress + salvage rows individually so a
+        # single offending record cannot drop the batch's results/progress.
+        log.write('batch flush failed, falling back to per-row inserts: {}'.format(traceback.format_exc()))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        if pending_progress > 0:
+            try:
+                with contextlib.closing(db.cursor()) as cursor:
+                    cursor.execute("""
+                        UPDATE `jobs`
+                        SET `progress` = `progress` + %s, last_update = NOW()
+                        WHERE `job_id` = %s
+                    """, [pending_progress, job_id])
+                db.commit()
+            except Exception:
+                log.write('progress catch-up update failed: {}'.format(traceback.format_exc()))
+        for row in pending_rows:
+            # row = [job_id, rec_id, species, songtype, presence, max_v]
+            insert_result_to_db(db, row[0], row[1], row[2], row[3], row[4], row[5])
+    return [], 0
+
+def _vector_result_row(r, working_folder, model_uri, job_id, species, songtype):
+    """Write and upload one vector file, returning the DB row to insert.
+
+    This function intentionally does not touch the DB so it is safe to run in a
+    bounded thread pool. The parent thread preserves the legacy DB semantics:
+    - vector write failure: record an error and skip classification_results row
+    - vector upload failure: record an error but still insert the result row
+      (matching the old upload_vector() path, which swallowed upload errors)
+    """
+    rec_name = r['uri'].split('/')[-1]
+    local_file = write_vector(r['uri'], working_folder, r['f'])
+    if local_file is None:
+        return {
+            'row': None,
+            'error_rec_id': r['id'],
+            'error': 'localFile is None',
+            'minv': None,
+            'maxv': None,
+        }
+
+    maxv = max(r['f'])
+    minv = min(r['f'])
+    vector_uri = '{}/classification_{}_{}.vector'.format(
+        model_uri.replace('.mod', ''), job_id, rec_name
+    )
+    upload_error = None
+    try:
+        upload_file(local_file, vector_uri)
+        os.remove(local_file)
+    except Exception:
+        upload_error = traceback.format_exc()
+        try:
+            if os.path.exists(local_file):
+                os.remove(local_file)
+        except Exception:
+            pass
+    return {
+        'row': [job_id, r['id'], species, songtype, r['r'], float(maxv)],
+        'error_rec_id': r['id'] if upload_error else None,
+        'error': upload_error,
+        'minv': float(minv),
+        'maxv': float(maxv),
+    }
+
+
+def _handle_vector_result(item, db, job_id, pending_rows, log):
+    if item.get('error_rec_id') is not None:
+        if item.get('error'):
+            log.write('vector upload/write error for rec {rid}: {err}'.format(
+                rid=item['error_rec_id'], err=item['error']))
+        insert_rec_error(db, item['error_rec_id'], job_id)
+    if item.get('row') is not None:
+        pending_rows.append(item['row'])
+    return pending_rows
+
+
 def process_results(res, working_folder, model_uri, job_id, species, songtype, db, log):
     min_vector_val = 9999999.0
     max_vector_val = -9999999.0
     processed = 0
+    seen = 0
+    pending_rows = []
+    pending_progress = 0
+    futures = set()
+
+    def consume_done(done):
+        nonlocal min_vector_val, max_vector_val, pending_rows, pending_progress, seen
+        for fut in done:
+            item = fut.result()
+            pending_progress += 1
+            seen += 1
+            if item.get('minv') is not None and min_vector_val > item['minv']:
+                min_vector_val = item['minv']
+            if item.get('maxv') is not None and max_vector_val < item['maxv']:
+                max_vector_val = item['maxv']
+            pending_rows = _handle_vector_result(item, db, job_id, pending_rows, log)
+            if pending_progress >= RESULT_BATCH_SIZE:
+                pending_rows, pending_progress = _flush_result_batch(
+                    db, job_id, pending_rows, pending_progress, log)
+                log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
+                    seen=seen, ins=processed, sp=species, st=songtype))
+
     try:
-        for r in res:
-            with contextlib.closing(db.cursor()) as cursor:
-                cursor.execute("""
-                    UPDATE `jobs`
-                    SET `progress` = `progress` + 1, last_update = NOW()
-                    WHERE `job_id` = %s
-                """, [job_id])
-                db.commit()
-            if r and 'id' in r:
-                processed = processed + 1
-                rec_name = r['uri'].split('/')
-                rec_name = rec_name[len(rec_name)-1]
-                local_file = write_vector(r['uri'],working_folder,r['f'])
-                if local_file is not None:
-                    maxv = max(r['f'])
-                    minv = min(r['f'])
-                    if min_vector_val > float(minv):
-                        min_vector_val = minv
-                    if max_vector_val < float(maxv):
-                        max_vector_val = maxv
-                    vector_uri = '{}/classification_{}_{}.vector'.format(
-                            model_uri.replace('.mod', ''), job_id, rec_name
-                    )
-                    upload_vector(vector_uri,local_file,r['id'],db,job_id)
-                    log.write("inserting results from {rid} for {sp} {st} into the database ({r}, maxv:{maxv})".format(
-                        rid=r['id'],
-                        r=r['r'],
-                        sp=species,
-                        st=songtype,
-                        maxv=maxv
-                    ))
-                    insert_result_to_db(db, job_id,r['id'], species, songtype,r['r'],maxv)
+        existing_result_ids = _existing_result_recording_ids(db, job_id, species, songtype, log)
+        log.write('processing classification results with batch_size={b}, vector_upload_workers={w}, existing_results={e}'.format(
+            b=RESULT_BATCH_SIZE, w=VECTOR_UPLOAD_WORKERS, e=len(existing_result_ids)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=VECTOR_UPLOAD_WORKERS) as executor:
+            for r in res:
+                if r and 'id' in r:
+                    processed += 1
+                    if r['id'] in existing_result_ids:
+                        # Recomputed vector still participates in final stats,
+                        # but committed row/vector output is not duplicated.
+                        maxv = max(r['f'])
+                        minv = min(r['f'])
+                        if min_vector_val > float(minv):
+                            min_vector_val = float(minv)
+                        if max_vector_val < float(maxv):
+                            max_vector_val = float(maxv)
+                        pending_progress += 1
+                        seen += 1
+                        if pending_progress >= RESULT_BATCH_SIZE:
+                            pending_rows, pending_progress = _flush_result_batch(
+                                db, job_id, pending_rows, pending_progress, log)
+                            log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
+                                seen=seen, ins=processed, sp=species, st=songtype))
+                        continue
+                    futures.add(executor.submit(
+                        _vector_result_row, r, working_folder, model_uri, job_id, species, songtype))
+                    if len(futures) >= VECTOR_UPLOAD_MAX_OUTSTANDING:
+                        done, futures = concurrent.futures.wait(
+                            futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                        consume_done(done)
                 else:
-                    log.write('localFile is None')
-                    insert_rec_error(db, r['id'], job_id)
+                    # Progress advances once per result (valid or error),
+                    # matching the original per-record phase-2 semantics.
+                    pending_progress += 1
+                    seen += 1
+                    if pending_progress >= RESULT_BATCH_SIZE:
+                        pending_rows, pending_progress = _flush_result_batch(
+                            db, job_id, pending_rows, pending_progress, log)
+                        log.write('processed {seen} results ({ins} valid so far) for {sp} {st}'.format(
+                            seen=seen, ins=processed, sp=species, st=songtype))
+            while futures:
+                done, futures = concurrent.futures.wait(
+                    futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                consume_done(done)
+        # Final flush: exact remainder so progress + results stay precise.
+        pending_rows, pending_progress = _flush_result_batch(
+            db, job_id, pending_rows, pending_progress, log)
     except Exception:
         exit_error(db, log, job_id, 'cannot process results. {}'.format(traceback.format_exc()))
     return {"t":processed,"stats":{"minv": float(min_vector_val), "maxv": float(max_vector_val)}}
@@ -272,7 +470,7 @@ def run_classification(job_id):
     log = Logger(job_id, 'classification.py', 'main')
     log.also_print = True
     
-    db = connect()
+    db = connect(log)
     try:
         (classifier_id, _, _, _, playlist_id, ncpu) = get_classification_job_data(db, job_id)
     except Exception:
@@ -331,7 +529,7 @@ def run_classification(job_id):
         return False
     log.write('done parallel classify')
     
-    db = connect()
+    db = connect(log)
     cancel_status(db, job_id, working_folder)
     try:
         stats = process_results(results, working_folder, model_specs['uri'], job_id, model_specs['species'], model_specs['songtype'], db, log)
