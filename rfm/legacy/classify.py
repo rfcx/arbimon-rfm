@@ -13,7 +13,7 @@ import concurrent.futures
 
 from .a2pyutils.logger import Logger
 from .a2audio.recanalizer import Recanalizer
-from .db import connect, get_classification_job_data, get_model_params, get_playlist, insert_rec_error, set_progress_params, update_job_error
+from .db import connect, ensure_connection, get_classification_job_data, get_model_params, get_playlist, insert_rec_error, set_progress_params, update_job_error
 from .storage import upload_file, download_file, config as storage_config
 
 FORCE_SEQUENTIAL_EXECUTION = os.getenv('FORCE_SEQUENTIAL_EXECUTION') == '1'
@@ -65,7 +65,7 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
         return None
     error_processing = False
     log.write('running classification...')
-    db = connect()
+    db = connect(log)
     if cancel_status(db,job_id,working_folder,False):
         classificationCanceled = True
         quit()
@@ -89,16 +89,30 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
                                   modelSampleRate=model_specs['sample_rate'],
                                   legacy=rec['legacy'])
         log.write('recAnalized {}'.format(rec_analized.status))
-        with contextlib.closing(db.cursor()) as cursor:
-            cursor.execute("""
-                UPDATE `jobs`
-                SET `progress` = `progress` + 1, last_update = NOW()
-                WHERE `job_id` = %s
-            """, [job_id])
-            db.commit()
     except Exception:
         error_processing = True
         log.write('error rec analyzed {} '.format(traceback.format_exc()))
+
+    # Best-effort progress bump on successful analysis, isolated from the DB
+    # connection state. The connection was opened before the (slow, load-
+    # dependent) download above and may have been idle-reaped in the meantime;
+    # reconnect transparently and retry once. A failed progress write must NOT
+    # mark the recording as errored (the analysis itself succeeded) and must
+    # NOT abort the job -- at worst the phase-1 progress counter lags by one,
+    # which the phase-2 flush corrects. Only bump on success, matching the
+    # original semantics (errored recs get their progress in phase 2).
+    if not error_processing:
+        try:
+            db = ensure_connection(db, log)
+            with contextlib.closing(db.cursor()) as cursor:
+                cursor.execute("""
+                    UPDATE `jobs`
+                    SET `progress` = `progress` + 1, last_update = NOW()
+                    WHERE `job_id` = %s
+                """, [job_id])
+                db.commit()
+        except Exception:
+            log.write('progress update failed (non-fatal, reconnecting next rec): {}'.format(traceback.format_exc()))
     log.write('finish')
     featvector = None
     fets = None
@@ -123,11 +137,20 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
     else:
         error_processing = True
     if error_processing:
+        # Per-record isolation: a single recording's failure (including a DB
+        # blip while recording the error) must NEVER sys.exit() and take the
+        # whole parallel job down with it. Record the error best-effort --
+        # reconnecting if the connection was dropped -- then skip just this rec.
         try:
-            insert_rec_error(db,rec['recording_id'],job_id)
+            db = ensure_connection(db, log)
+            insert_rec_error(db, rec['recording_id'], job_id)
         except Exception:
-            exit_error(db, log, job_id, "Could not insert recording error, {}".format(traceback.format_exc()))
-        db.close()
+            log.write('could not insert recording error for rec {} (non-fatal, skipping rec): {}'.format(
+                rec['recording_id'], traceback.format_exc()))
+        try:
+            db.close()
+        except Exception:
+            pass
         return None
     else:
         log.write('done processing this rec')
@@ -447,7 +470,7 @@ def run_classification(job_id):
     log = Logger(job_id, 'classification.py', 'main')
     log.also_print = True
     
-    db = connect()
+    db = connect(log)
     try:
         (classifier_id, _, _, _, playlist_id, ncpu) = get_classification_job_data(db, job_id)
     except Exception:
@@ -506,7 +529,7 @@ def run_classification(job_id):
         return False
     log.write('done parallel classify')
     
-    db = connect()
+    db = connect(log)
     cancel_status(db, job_id, working_folder)
     try:
         stats = process_results(results, working_folder, model_specs['uri'], job_id, model_specs['species'], model_specs['songtype'], db, log)
