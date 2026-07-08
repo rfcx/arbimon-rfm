@@ -193,19 +193,41 @@ def update_validations(db, project_id, user_id, model_name, validations_key, job
             WHERE `job_id` = %s""", [validation_set_id, job_id])
         db.commit()
 
-        cursor.execute("""
-            UPDATE `jobs` SET `progress_steps` = %s, progress=0, state="processing"
-            WHERE `job_id` = %s""", [progress_steps, job_id])
-        db.commit()
+        _set_steps_then_processing(cursor, db, job_id, progress_steps)
 
     return validation_set_id
 
+def _set_steps_then_processing(cursor, db, job_id, progress_steps):
+    """Two-step, trigger-aware job progress init (2026-07-08).
+
+    arbimon2 has a BEFORE UPDATE trigger on `jobs` (jobs_BEFORE_UPDATE) that
+    force-sets NEW.state='completed' whenever NEW.progress >= OLD.progress_steps.
+    A fresh job row has progress_steps=0, so the old single combined UPDATE
+    (steps=N, progress=0, state='processing') evaluated 0 >= 0 -> the trigger
+    overrode the state we were writing to 'completed' IN THE SAME STATEMENT,
+    and since the classify phase-1 progress bumps never write `state`, the job
+    showed 'completed' for its entire run — and a KILLED job was left
+    state='completed', completed=0, zero results (silent-failure ghost; see
+    rfcx-local OPEN-ITEMS #28 addendum, observed live on job 167683).
+
+    Fix mirrors the PM driver's _init() (pm_drive.py, PR #6 2026-06-12):
+    (1) raise progress_steps FIRST in its own UPDATE (this one may still trip
+    the trigger against the OLD 0 — harmless), then (2) set progress/state —
+    by then OLD.progress_steps is the real total so the trigger can't fire,
+    and this write corrects any flip from step 1.
+    """
+    cursor.execute("""
+        UPDATE `jobs` SET `progress_steps` = %s
+        WHERE `job_id` = %s""", [progress_steps, job_id])
+    db.commit()
+    cursor.execute("""
+        UPDATE `jobs` SET progress=0, state="processing", last_update=now()
+        WHERE `job_id` = %s""", [job_id])
+    db.commit()
+
 def set_progress_steps(db, job_id, progress_steps):
      with closing(db.cursor()) as cursor:
-        cursor.execute("""
-        UPDATE `jobs` SET `progress_steps` = %s, progress=0, state="processing"
-        WHERE `job_id` = %s""", [progress_steps, job_id])
-        db.commit()
+        _set_steps_then_processing(cursor, db, job_id, progress_steps)
 
 
 def update_job_error(db, job_id, msg):
@@ -239,13 +261,11 @@ def update_job_progress(db, job_id: int, progress_increment = 1):
         db.commit()
 
 def set_progress_params(db, progress_steps, job_id):
+    # Two-step trigger-aware init — see _set_steps_then_processing. This is
+    # the classification path that produced the live 'completed'-while-running
+    # mislabels (OPEN-ITEMS #28 addendum).
     with closing(db.cursor()) as cursor:
-        cursor.execute("""
-            UPDATE `jobs`
-            SET `progress_steps`=%s, progress=0, state="processing"
-            WHERE `job_id` = %s
-        """, [progress_steps*2+5, job_id])
-        db.commit()
+        _set_steps_then_processing(cursor, db, job_id, progress_steps*2+5)
 
 def get_classification_job_data(db, job_id):
     with closing(db.cursor()) as cursor:

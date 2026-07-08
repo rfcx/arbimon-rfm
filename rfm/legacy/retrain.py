@@ -299,4 +299,9 @@ def retrain(job_id: int):
     remove_working_folder(job_id)
     db.close()
     log.write("script ended")
+    # Explicit success marker so the retrain wrapper can propagate an HONEST
+    # exit code (see classify_legacy / OPEN-ITEMS #28): every failure path
+    # above exits via exit_error()/sys.exit(-1), so reaching here means the
+    # retrained model was saved and the job finalized.
+    return True
 
