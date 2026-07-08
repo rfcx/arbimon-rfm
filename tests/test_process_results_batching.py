@@ -52,8 +52,11 @@ def _install_stubs():
 
     # rfm.legacy.db (only the names imported by classify.py)
     db_mod = types.ModuleType('rfm.legacy.db')
-    for name in ('connect', 'get_classification_job_data', 'get_model_params',
-                 'get_playlist', 'set_progress_params', 'update_job_error'):
+    # NB: keep this list in sync with classify.py's `from .db import ...`
+    # line (PR #4 added ensure_connection; missing names break collection).
+    for name in ('connect', 'ensure_connection', 'get_classification_job_data',
+                 'get_model_params', 'get_playlist', 'set_progress_params',
+                 'update_job_error'):
         setattr(db_mod, name, lambda *a, **k: None)
 
     _rec_errors = []
