@@ -43,12 +43,12 @@ def roigen(line,tempFolder,jobId,log=None):
     roi = Roizer(recuri,tempFolder,bucketName,initTime,endingTime,lowFreq,highFreq,legacy)
 
     with closing(db.cursor()) as cursor:
-        cursor.execute('update `jobs` set `state`="processing", `progress` = `progress` + 1 ,last_update = now() where `job_id` = '+str(jobId))
+        cursor.execute("update jobs set state='processing', progress = progress + 1 ,last_update = now() where job_id = %s", [jobId])
         db.commit()
 
     if 'HasAudioData' not in roi.status:
         with closing(db.cursor()) as cursor:
-            cursor.execute('INSERT INTO `recordings_errors` (`recording_id`, `job_id`) VALUES ('+str(recId)+','+str(jobId)+') ')
+            cursor.execute('INSERT INTO recordings_errors (recording_id, job_id) VALUES (%s, %s)', [recId, jobId])
             db.commit()
         db.close()
         if log is not None:
@@ -78,7 +78,7 @@ def recnilize(line,workingFolder,jobId,pattern,log=None,ssim=True,searchMatch=Fa
     if isRetrain is False:
         pid = None
         with closing(db.cursor()) as cursor:
-            cursor.execute('SELECT `project_id` FROM `jobs` WHERE `job_id` =  '+str(jobId))
+            cursor.execute('SELECT project_id FROM jobs WHERE job_id = %s', [jobId])
             rowpid = cursor.fetchone()
             pid = rowpid[0]
         if pid is None:

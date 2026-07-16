@@ -11,6 +11,7 @@ opencv-python==4.10.0.84
 
 # For legacy
 mysql-connector-python==8.1.0
+psycopg2-binary==2.9.9
 boto3==1.28.71
 
 # Dev
