@@ -382,6 +382,14 @@ def get_playlist(db, playlist_id):
 
 def insert_rec_error(db, rec_id, job_id):
     error = traceback.format_exc()
+    # mysql2pg W4-1 (2026-07-16 adversarial review): this is frequently called
+    # from an except-branch after a prior statement failed. On PostgreSQL that
+    # leaves the transaction aborted (InFailedSqlTransaction), so this INSERT
+    # would fail too. Roll back any aborted txn first (no-op-safe on MySQL).
+    try:
+        db.rollback()
+    except Exception:
+        pass
     with closing(db.cursor()) as cursor:
         cursor.execute("""
             INSERT INTO recordings_errors(recording_id, job_id, error)
