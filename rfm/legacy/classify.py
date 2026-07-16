@@ -244,6 +244,16 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
             db.commit()
     except Exception:
         print('ERROR writing {}'.format(traceback.format_exc()))
+        # mysql2pg W4-1 (2026-07-16 adversarial review): on PostgreSQL a failed
+        # INSERT aborts the whole transaction (InFailedSqlTransaction), so the
+        # follow-up insert_rec_error() on the SAME connection would also fail
+        # ('current transaction is aborted') and stay poisoned for the next
+        # row. Roll back first so the error row (and subsequent rows) commit.
+        # No-op-safe on MySQL.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         insert_rec_error(db, rec_id, job_id)
 
 # Phase-2 knobs. Kept env-overridable so behaviour can be tuned without a
