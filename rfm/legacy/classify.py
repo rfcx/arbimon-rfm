@@ -43,10 +43,10 @@ def remove_working_folder(job_id):
 def cancel_status(db, job_id, rm_folder=None, quitj=True):
     status = None
     with contextlib.closing(db.cursor()) as cursor:
-        cursor.execute('select `cancel_requested` from `jobs` where `job_id` = '+str(job_id))
+        cursor.execute('select cancel_requested from jobs where job_id = %s', [job_id])
         (status,) = cursor.fetchone()
         if status and int(status) > 0:
-            cursor.execute('update `jobs` set `state` = "canceled", last_update = now() where `job_id` = '+str(job_id))
+            cursor.execute("update jobs set state = 'canceled', last_update = now() where job_id = %s", [job_id])
             db.commit()
             print('job canceled')
             if rm_folder:
@@ -106,9 +106,9 @@ def classify_rec(rec, model_specs, working_folder, log, job_id):
             db = ensure_connection(db, log)
             with contextlib.closing(db.cursor()) as cursor:
                 cursor.execute("""
-                    UPDATE `jobs`
-                    SET `progress` = `progress` + 1, last_update = NOW()
-                    WHERE `job_id` = %s
+                    UPDATE jobs
+                    SET progress = progress + 1, last_update = NOW()
+                    WHERE job_id = %s
                 """, [job_id])
                 db.commit()
         except Exception:
@@ -236,7 +236,7 @@ def insert_result_to_db(db, job_id, rec_id, species, songtype, presence, max_v):
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
-                INSERT INTO `classification_results` (
+                INSERT INTO classification_results (
                     job_id, recording_id, species_id, songtype_id, present,
                     max_vector_value
                 ) VALUES (%s, %s, %s, %s, %s, %s)
@@ -267,11 +267,11 @@ def _existing_result_recording_ids(db, job_id, species, songtype, log):
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
-                SELECT `recording_id`
-                FROM `classification_results`
-                WHERE `job_id` = %s
-                  AND `species_id` = %s
-                  AND `songtype_id` = %s
+                SELECT recording_id
+                FROM classification_results
+                WHERE job_id = %s
+                  AND species_id = %s
+                  AND songtype_id = %s
             """, [job_id, species, songtype])
             return set(row[0] for row in cursor)
     except Exception:
@@ -294,13 +294,13 @@ def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
         with contextlib.closing(db.cursor()) as cursor:
             if pending_progress > 0:
                 cursor.execute("""
-                    UPDATE `jobs`
-                    SET `progress` = `progress` + %s, last_update = NOW()
-                    WHERE `job_id` = %s
+                    UPDATE jobs
+                    SET progress = progress + %s, last_update = NOW()
+                    WHERE job_id = %s
                 """, [pending_progress, job_id])
             if pending_rows:
                 cursor.executemany("""
-                    INSERT INTO `classification_results` (
+                    INSERT INTO classification_results (
                         job_id, recording_id, species_id, songtype_id, present,
                         max_vector_value
                     ) VALUES (%s, %s, %s, %s, %s, %s)
@@ -318,9 +318,9 @@ def _flush_result_batch(db, job_id, pending_rows, pending_progress, log):
             try:
                 with contextlib.closing(db.cursor()) as cursor:
                     cursor.execute("""
-                        UPDATE `jobs`
-                        SET `progress` = `progress` + %s, last_update = NOW()
-                        WHERE `job_id` = %s
+                        UPDATE jobs
+                        SET progress = progress + %s, last_update = NOW()
+                        WHERE job_id = %s
                     """, [pending_progress, job_id])
                 db.commit()
             except Exception:
@@ -545,15 +545,15 @@ def run_classification(job_id):
     try:
         with contextlib.closing(db.cursor()) as cursor:
             cursor.execute("""
-                INSERT INTO `classification_stats` (`job_id`, `json_stats`)
+                INSERT INTO classification_stats (job_id, json_stats)
                 VALUES (%s, %s)
             """, [job_id, json.dumps(stats_json)])
             db.commit()
             cursor.execute("""
-                UPDATE `jobs`
-                SET `progress` = `progress_steps`, `completed` = 1,
-                    state="completed", `last_update` = now()
-                WHERE `job_id` = %s
+                UPDATE jobs
+                SET progress = progress_steps, completed = 1,
+                    state='completed', last_update = now()
+                WHERE job_id = %s
             """, [job_id])
             db.commit()
         db.close()

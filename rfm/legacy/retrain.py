@@ -287,8 +287,8 @@ def retrain(job_id: int):
     try:
         with closing(db.cursor()) as cursor:
             cursor.execute(
-                'update `jobs` set `state`="completed", `progress`=`progress_steps`, '
-                '`completed`=1, `last_update`=now() where `job_id`=%s', [job_id])
+                "update jobs set state='completed', progress=progress_steps, "
+                'completed=1, last_update=now() where job_id=%s', [job_id])
             db.commit()
         log.write('job marked completed')
     except Exception:

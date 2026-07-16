@@ -15,7 +15,7 @@ from .a2audio.model import Model
 from .a2audio.roiset import Roiset
 from .a2audio.training import recnilize, roigen
 from .a2pyutils.logger import Logger
-from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations
+from .db import connect, get_training_job, get_training_job_params, get_training_data, get_validation_data, update_job_error, update_job_last_update, update_job_progress, update_validations, insert_returning_id
 from .storage import upload_file
 
 num_cores = multiprocessing.cpu_count()
@@ -335,20 +335,29 @@ def run_train(job_id: int):
                 statsJson = statsJson + ', "specificity":'+str(model_stats[5])+' , "tp":'+str(model_stats[6])+' , "fp":'+str(model_stats[7])+' '
                 statsJson = statsJson + ', "tn":'+str(model_stats[8])+' , "fn":'+str(model_stats[9])+' , "minv": '+str(model_stats[10])+', "maxv": '+str(model_stats[11])+'}'
             
-                cursor.execute("INSERT INTO `models`(`name`, `model_type_id`, `uri`, `date_created`, `project_id`, `user_id`,"+
-                            " `training_set_id`, `validation_set_id`) " +
-                            " VALUES ('"+model_name+"', "+str(model_type_id)+" , '"+modKey+"' , now() , "+str(project_id)+","+
-                            str(user_id)+" ,"+str(training_set_id)+", "+str(validation_set_id)+" )")
+                # mysql2pg W4 (2026-07-16): parameterized (was string-concat
+                # SQL - injection-prone and PG-incompatible on the quoted
+                # literals) + dialect-aware generated-id fetch (RETURNING on
+                # PG, lastrowid on MySQL) via db.insert_returning_id.
+                insertmodelId = insert_returning_id(cursor,
+                            "INSERT INTO models(name, model_type_id, uri, date_created, project_id, user_id,"
+                            " training_set_id, validation_set_id) "
+                            " VALUES (%s, %s, %s, now(), %s, %s, %s, %s)",
+                            [model_name, model_type_id, modKey, project_id,
+                             user_id, training_set_id, validation_set_id],
+                            'model_id')
                 db.commit()
-                insertmodelId = cursor.lastrowid
-                cursor.execute("INSERT INTO `model_stats`(`model_id`, `json_stats`) VALUES ("+str(insertmodelId)+",'"+statsJson+"')")
+                cursor.execute("INSERT INTO model_stats(model_id, json_stats) VALUES (%s, %s)",
+                            [insertmodelId, statsJson])
                 db.commit()
-                cursor.execute("INSERT INTO `model_classes`(`model_id`, `species_id`, `songtype_id`) VALUES ("+str(insertmodelId)
-                            +","+str(species)+","+str(songtype)+")")
+                cursor.execute("INSERT INTO model_classes(model_id, species_id, songtype_id) VALUES (%s, %s, %s)",
+                            [insertmodelId, species, songtype])
                 db.commit()       
-                cursor.execute('update `job_params_training` set `trained_model_id` = '+str(insertmodelId)+' where `job_id` = '+str(job_id))
+                cursor.execute('update job_params_training set trained_model_id = %s where job_id = %s',
+                            [insertmodelId, job_id])
                 db.commit()
-                cursor.execute('update `jobs` set `state`="completed", `progress` = `progress_steps` ,  `completed` = 1 , `last_update` = now() where `job_id` = '+str(job_id))
+                cursor.execute("update jobs set state='completed', progress = progress_steps ,  completed = 1 , last_update = now() where job_id = %s",
+                            [job_id])
                 db.commit()
                 log.write('saved to db correctly')
                 savedModel  = True
